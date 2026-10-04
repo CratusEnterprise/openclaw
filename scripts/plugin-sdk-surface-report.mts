@@ -200,7 +200,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +4: executor controller, binding, context, and resolver.
       // +1: required session cleanup failure preserves native ownership before host reset.
       // +2: approved async upstream-link writes with released sync compatibility.
-      3650,
+      // -9: remove the retired heartbeat SDK exports.
+      3641,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -214,7 +215,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: owner-approved async coding-tool construction with retained sync compatibility.
       // +1: resolve the controller from the current invocation registry.
       // +2: approved async upstream-link writes with released sync compatibility.
-      2112,
+      // -4: remove the retired heartbeat SDK callables.
+      2108,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(
