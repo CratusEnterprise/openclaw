@@ -39,7 +39,11 @@ import type {
   SessionListRowContext,
   SessionListRowContextProvider,
 } from "./session-utils-contracts.js";
-import { isFinitePositiveTimestamp, resolveSessionChildOwners } from "./session-utils-core.js";
+import {
+  isFinitePositiveTimestamp,
+  matchesSessionArchiveFilter,
+  resolveSessionChildOwners,
+} from "./session-utils-core.js";
 import { createSessionListSearchMatcher } from "./session-utils-search.js";
 import type { SessionListModelCatalog, SessionsListResult } from "./session-utils.types.js";
 
@@ -51,8 +55,18 @@ export type SessionListFilteredEntries = {
   people?: SessionsListResult["people"];
   peopleIncomplete?: boolean;
   peopleSessionCount?: number;
+  activityExpiresAt?: number;
   activityPulse?: SessionActivityPulse;
   involvingProfileId?: string;
+};
+
+export type SessionEntrySelection = Omit<SessionListFilteredEntries, "ownerEntries"> & {
+  ownerCount: number;
+  totalCount: number;
+  limitApplied?: number;
+  offset: number;
+  nextOffset: number | null;
+  hasMore: boolean;
 };
 
 export type SessionListFilterParams = {
@@ -75,13 +89,6 @@ export type SessionListFilterParams = {
   shouldYield?: () => boolean;
 };
 
-export function matchesSessionArchiveFilter(
-  entry: Pick<SessionEntry, "archivedAt">,
-  archived: SessionsListParams["archived"],
-) {
-  return archived === "all" || (entry.archivedAt !== undefined) === (archived === true);
-}
-
 function createSessionCandidateFilter(params: SessionListFilterParams) {
   const { opts, now } = params;
   let rowContext: SessionListRowContext | undefined;
@@ -100,6 +107,7 @@ function createSessionCandidateFilter(params: SessionListFilterParams) {
       selection.isCronRun ||
       (opts.excludeCron === true && selection.isCron) ||
       (opts.excludeSystem === true && selection.isSystem) ||
+      (opts.excludeDock === true && selection.isDock) ||
       (opts.excludeSubagents === true && selection.isSubagent) ||
       (!includeGlobal && storeKey === "global") ||
       (!includeUnknown && storeKey === "unknown")
@@ -194,6 +202,7 @@ export function* filterSessionEntries(
   const ownerId = normalizeOptionalString(opts.ownerId);
   const ownerFirstActorId = normalizeOptionalString(params.ownerFirstActorId);
   const activeCutoff = activeMinutes === undefined ? undefined : now - activeMinutes * 60_000;
+  let activityExpiresAt = Infinity;
   const entries: SessionEntryPair[] = [];
   const ownerEntries: SessionEntryPair[] = [];
   const ownerFacet = new Map<string, SessionOwnerFacetIdentity>();
@@ -316,12 +325,15 @@ export function* filterSessionEntries(
     if (matchesSearch && !matchesSearch(key, entry)) {
       continue;
     }
-    if (
-      activeCutoff !== undefined &&
-      (opts.sortBy === "activity" ? sessionActivityTimestamp(entry) : (entry.updatedAt ?? 0)) <
-        activeCutoff
-    ) {
-      continue;
+    if (activeMinutes !== undefined) {
+      const activity =
+        opts.sortBy === "activity" ? sessionActivityTimestamp(entry) : (entry.updatedAt ?? 0);
+      const expiresAt = activity + activeMinutes * 60_000;
+      if (expiresAt < now) {
+        continue;
+      }
+      // Facets include candidates absent from the selected person or returned page.
+      activityExpiresAt = Math.min(activityExpiresAt, expiresAt);
     }
     const effectiveOwner = projectOwner(entry, identities, cfg, configuredAgentIds)?.actor;
     if (
@@ -447,6 +459,7 @@ export function* filterSessionEntries(
       : {}),
     // Empty time/search windows do not invalidate a resolved person link.
     involvingProfileId: selectedProfileId,
+    ...(Number.isFinite(activityExpiresAt) ? { activityExpiresAt } : {}),
     ...(activityPulse ? { activityPulse } : {}),
     ...(opts.includePeople
       ? {
