@@ -339,9 +339,8 @@ export async function prepareCodexThreadLifecyclePreflight(params: CodexStartOrR
   );
   const nativeSkillIsolationFingerprint = nativeSkillIsolation
     ? fingerprintJsonObject({
-        version: 2,
+        version: 1,
         disabledUserSkillPaths: nativeSkillIsolation.disabledUserSkillPaths,
-        suppressNativeSkillInstructions: nativeSkillIsolation.suppressNativeSkillInstructions,
       })
     : undefined;
   const legacyUserMcpServersFingerprint =

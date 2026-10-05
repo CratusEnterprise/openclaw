@@ -651,6 +651,7 @@ export function setupRunAttemptTestHooks(options: { sessionOwner?: null } = {}):
       cleanup();
     }),
   );
+
   beforeEach(async (context) => {
     if (!context.codexAttemptRuntime) {
       throw new Error("Codex run-attempt tests require the shared extension runtime fixture");
