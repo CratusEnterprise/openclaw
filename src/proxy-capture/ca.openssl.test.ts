@@ -5,6 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { TEST_TLS_KEY_PEM } from "../../test/helpers/tls-fixture.js";
 import * as systemBin from "../infra/resolve-system-bin.js";
 import { ensureDebugProxyCa, ensureSecretEgressProxyCa, generateLocalProxyLeaf } from "./ca.js";
 
@@ -57,49 +58,16 @@ describe.skipIf(opensslBins.length === 0)("local proxy certificate compatibility
         certPath: path.join(certDir, "root-ca.pem"),
         keyPath: path.join(certDir, "root-ca-key.pem"),
       };
-      const configPath = path.join(certDir, "retained.cnf");
-      const version = await run(openssl, ["version"]);
-      const opensslVersion = /^OpenSSL (\d+)\.(\d+)\./.exec(version.stdout);
-      const supportsNoKeyId =
-        opensslVersion &&
-        (Number(opensslVersion[1]) > 3 ||
-          (Number(opensslVersion[1]) === 3 && Number(opensslVersion[2]) >= 2));
-      await fs.writeFile(
-        configPath,
-        [
-          "[req]",
-          "distinguished_name = subject",
-          "prompt = no",
-          "[subject]",
-          "CN = Retained Test Proxy",
-          "[v3_ca]",
-          "basicConstraints = critical, CA:TRUE",
-          "keyUsage = critical, keyCertSign, cRLSign",
-          // OpenSSL 3.2+ can add SKI automatically; older OpenSSL/LibreSSL reject `none`.
-          ...(supportsNoKeyId ? ["subjectKeyIdentifier = none"] : []),
-          "",
-        ].join("\n"),
-      );
-      await run(openssl, [
-        "req",
-        "-config",
-        configPath,
-        "-extensions",
-        "v3_ca",
-        "-x509",
-        "-newkey",
-        "rsa:2048",
-        "-sha256",
-        "-days",
-        "1",
-        "-nodes",
-        "-keyout",
-        ca.keyPath,
-        "-out",
+      // Frozen LibreSSL CA signed with TEST_TLS_KEY_PEM, with only CA constraints
+      // and key usage: generating it here would depend on the binary's SKI defaults.
+      await fs.copyFile(
+        new URL("./fixtures/retained-ca-no-key-identifiers.pem", import.meta.url),
         ca.certPath,
-      ]);
+      );
+      await fs.writeFile(ca.keyPath, TEST_TLS_KEY_PEM, { mode: 0o600 });
       const issuer = await run(openssl, ["x509", "-in", ca.certPath, "-noout", "-text"]);
       expect(issuer.stdout).not.toContain("Subject Key Identifier");
+      expect(issuer.stdout).not.toContain("Authority Key Identifier");
       const retainedCert = await fs.readFile(ca.certPath);
       const retainedKey = await fs.readFile(ca.keyPath);
       await expect(ensureDebugProxyCa(certDir)).resolves.toEqual(ca);
