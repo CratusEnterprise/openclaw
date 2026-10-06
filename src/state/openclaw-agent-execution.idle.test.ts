@@ -8,6 +8,7 @@ import {
 } from "../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { SQLITE_IDLE_HANDLE_TTL_MS } from "../infra/sqlite-handle-lifecycle.js";
+import { readDatabasePathIdentitySync } from "../infra/sqlite-worker-identity.js";
 import {
   markGatewayRestartDraining,
   resetGatewayWorkAdmission,
@@ -96,6 +97,35 @@ it("evicts the least recently used idle executor when a fifth agent finishes", a
   await use("second");
   expect(opened).toHaveLength(6);
   expect(closedAgents()).toEqual(["second", "third"]);
+});
+
+it("keeps a shared creating owner out of idle eviction until its last borrower releases", async () => {
+  const options = {
+    agentId: "creating",
+    env,
+    path: path.join(env.OPENCLAW_STATE_DIR!, "creating.sqlite"),
+  };
+  const constraints = { expectedCreationIdentity: readDatabasePathIdentitySync(options.path) };
+  const first = captureOpenClawAgentDatabaseExecution(options, constraints);
+  const joining = captureOpenClawAgentDatabaseExecution(options, constraints);
+  try {
+    await first.prepare(source);
+    await first.release();
+    for (const agentId of ["first", "second", "third", "fourth", "fifth"]) {
+      await use(agentId);
+    }
+    expect(closedAgents()).toEqual(["first"]);
+    await joining.prepare(source);
+    expect(opened.filter(({ agentId }) => agentId === "creating")).toHaveLength(1);
+    const ordinary = captureOpenClawAgentDatabaseExecution(options);
+    try {
+      await expect(ordinary.prepare(source)).rejects.toThrow(/captured creating reference/);
+    } finally {
+      await ordinary.release();
+    }
+  } finally {
+    await Promise.allSettled([first.release(), joining.release()]);
+  }
 });
 
 it("expires each executor independently and refreshes only the borrowed one", async () => {
