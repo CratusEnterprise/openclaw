@@ -268,6 +268,7 @@ function createAgentDatabaseExecution(
     createIfMissing = false,
     creatingTarget?: DatabasePathIdentity,
     signal?: AbortSignal,
+    readmitSchema = false,
     contentionDeadline?: number,
   ): Promise<T | undefined> {
     const pending = agentDatabaseLifecycle.pending.get(pathname);
@@ -341,6 +342,7 @@ function createAgentDatabaseExecution(
         assertCallerCurrent,
         createIfMissing,
         signal,
+        readmitSchema,
       );
       if (generation === current && current.failure()) {
         try {
@@ -396,6 +398,7 @@ function createAgentDatabaseExecution(
             createIfMissing,
             creatingTarget,
             signal,
+            readmitSchema,
             deadline,
           );
         }
@@ -520,7 +523,7 @@ function createAgentDatabaseExecution(
           }
           return captureGenerationClaim();
         },
-        async prepare(source, signal) {
+        async prepare(source, signal, options) {
           assertBorrowed();
           assertCreationReference(true);
           const result = run(
@@ -535,6 +538,7 @@ function createAgentDatabaseExecution(
             true,
             creatingTarget,
             signal,
+            options?.readmitSchema,
           );
           pending.add(result);
           void result.finally(() => pending.delete(result)).catch(() => undefined);
