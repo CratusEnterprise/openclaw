@@ -292,7 +292,9 @@ describe("admitted SQLite schema facts", () => {
     reader.exec("BEGIN");
     reader.prepare("SELECT id FROM original").all();
     writer.exec("CREATE TABLE later (id)");
-    expect(tableExists(reader, "later")).toBe(false);
+    runSqliteReadOperationSync(reader, () => {
+      expect(tableExists(reader, "later")).toBe(false);
+    });
     reader.exec("COMMIT");
     expect(tableExists(reader, "later")).toBe(true);
 

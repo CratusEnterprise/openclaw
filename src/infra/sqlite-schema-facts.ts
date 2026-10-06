@@ -488,7 +488,8 @@ export function getAdmittedSqliteSchemaFacts(
     owner.snapshot = undefined;
   }
   const scope = bindScope(database, owner);
-  if (owner.scopeRevision !== scope.revision) {
+  const scopeChanged = owner.scopeRevision !== scope.revision;
+  if (scopeChanged) {
     invalidate(owner);
     owner.scopeRevision = scope.revision;
   }
@@ -502,7 +503,9 @@ export function getAdmittedSqliteSchemaFacts(
   }
   if (!owner.facts) {
     owner.snapshot = snapshot;
-    owner.transactionalFacts = database.isTransaction;
+    // Managed operations refresh on their next admission. Unmanaged snapshots and
+    // sibling publications observed inside a transaction cannot outlive that snapshot.
+    owner.transactionalFacts ||= database.isTransaction && (owner.readDepth === 0 || scopeChanged);
     owner.facts = runSqlitePinnedReadSnapshotSync(database, (schemaVersion) => {
       const userVersion = executeWithCachedStatement(database, "PRAGMA user_version", [], (s) =>
         s.get(),
