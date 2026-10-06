@@ -50,7 +50,7 @@ function isUnsupportedCodexVisualizeSkill(skill: {
     return skill.pluginId === CODEX_VISUALIZE_PLUGIN_ID;
   }
   return (
-    skill.name === "visualize" &&
+    (skill.name === "visualize" || skill.name === "visualize:visualize") &&
     skill.path.replaceAll("\\", "/").includes(CODEX_VISUALIZE_LEGACY_PATH)
   );
 }

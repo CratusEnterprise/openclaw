@@ -422,6 +422,7 @@ it("captures a personal skill created during the authoritative Codex reload", as
 
 it.each([
   ["current plugin identity", { pluginId: "visualize@openai-bundled" }, ".openclaw"],
+  ["legacy qualified cache identity", { name: "visualize:visualize" }, ".openclaw"],
   ["legacy cache identity with implicit default state", {}, undefined],
 ])("disables renderer-incompatible Codex skills via %s", async (_label, metadata, stateDir) => {
   await withNativeSkillHome(async (home) => {
