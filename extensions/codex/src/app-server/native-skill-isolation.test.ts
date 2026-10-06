@@ -521,6 +521,60 @@ it.each([
   });
 });
 
+it("retries error-bearing default-state skill discovery responses", async () => {
+  await withNativeSkillHome(async (home) => {
+    const visualizeSkill = path.join(
+      home,
+      ".codex",
+      "plugins",
+      "cache",
+      "openai-bundled",
+      "visualize",
+      "skills",
+      "visualize",
+      "SKILL.md",
+    );
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({
+        data: [
+          {
+            cwd: home,
+            errors: [{ path: home, message: "skill reload failed" }],
+            skills: [],
+          },
+        ],
+      })
+      .mockResolvedValue({
+        data: [
+          {
+            cwd: home,
+            errors: [],
+            skills: [
+              {
+                ...skill("visualize", visualizeSkill, "user", "Render inline visualizations"),
+                pluginId: "visualize@openai-bundled",
+              },
+            ],
+          },
+        ],
+      });
+    const { client } = createFakeCodexAppServerClient(request);
+
+    await withEnvAsync(
+      { CODEX_HOME: undefined, HOME: home, OPENCLAW_STATE_DIR: path.join(home, ".openclaw") },
+      async () => {
+        const params = { client, cwd: home };
+        await expect(resolveCodexNativeSkillIsolation(params)).resolves.toBe(undefined);
+        const recovered = await resolveCodexNativeSkillIsolation(params);
+        expect(recovered?.disabledUserSkillPaths).toEqual([visualizeSkill]);
+        await expect(resolveCodexNativeSkillIsolation(params)).resolves.toBe(recovered);
+      },
+    );
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+});
+
 it("preserves direct skills under a state-owned default Codex home", async () => {
   return withNativeSkillHome(async (stateHome) => {
     const skillPath = path.join(stateHome, ".codex", "skills", "state-owned", "SKILL.md");

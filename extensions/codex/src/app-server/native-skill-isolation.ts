@@ -283,6 +283,9 @@ async function resolveUncachedCodexNativeSkillIsolation(
       { cwds: [params.cwd], forceReload: true },
       { signal: params.signal },
     );
+    if (response.data.some((entry) => entry.errors.length > 0)) {
+      throw new Error("Codex native skill discovery returned errors");
+    }
     skillPaths = new Set<string>();
     for (const entry of response.data) {
       for (const skill of entry.skills) {
