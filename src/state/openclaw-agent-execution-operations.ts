@@ -5,6 +5,7 @@ import {
   deferSqliteWorkerCommitReceipt,
   takeSqliteWorkerOperationAdmissionAttachment,
 } from "../infra/sqlite-worker-operation-admission.js";
+import { readTrajectoryRuntimeRetentionLease } from "../trajectory/runtime-retention.contract.js";
 import type { AgentDatabaseMaintenanceOperations } from "./openclaw-agent-execution-maintenance.js";
 import type { AgentWorkerOperationContext } from "./openclaw-agent-operation-context.js";
 import type { WorkerOperationHandlers, WorkerOperations } from "./worker-operation-registry.js";
@@ -202,19 +203,9 @@ export async function loadAgentTrajectoryOperations() {
       );
     },
     "trajectory.retention.begin": (_input: undefined, { open }) => {
-      const attachment = takeSqliteWorkerOperationAdmissionAttachment();
-      if (
-        typeof attachment !== "object" ||
-        attachment === null ||
-        !("trajectoryRetentionLease" in attachment) ||
-        !(attachment.trajectoryRetentionLease instanceof SharedArrayBuffer) ||
-        attachment.trajectoryRetentionLease.byteLength !== 4
-      ) {
-        throw new Error("Trajectory retention lease is unavailable");
-      }
       return retention.beginTrajectoryRuntimeRetention(
         open().db,
-        new Int32Array(attachment.trajectoryRetentionLease),
+        readTrajectoryRuntimeRetentionLease(takeSqliteWorkerOperationAdmissionAttachment()),
       );
     },
     "trajectory.retention.delete": (
