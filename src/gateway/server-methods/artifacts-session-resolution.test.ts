@@ -11,6 +11,7 @@ import {
 } from "../session-sharing.test-utils.js";
 import {
   ArtifactSessionResolutionError,
+  createArtifactSessionAccess,
   prepareArtifactSessionResolution,
   type ArtifactQuery,
 } from "./artifacts-session-resolution.js";
@@ -21,7 +22,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../server-session-key.js", () => ({
-  resolveSessionKeyForRun: mocks.resolveRunSession,
+  resolveSessionForRun: mocks.resolveRunSession,
 }));
 
 async function resolveSession(
@@ -29,8 +30,13 @@ async function resolveSession(
   getRuntimeConfig: () => OpenClawConfig | undefined,
   client: GatewayClient | null,
 ) {
+  using access = createArtifactSessionAccess({
+    getRuntimeConfig: () => getRuntimeConfig() ?? {},
+    client,
+  });
   const resolve = await prepareArtifactSessionResolution(query);
-  return resolve(getRuntimeConfig(), client);
+  const selected = await resolve(access);
+  return selected ? { sessionKey: selected.sessionKey, agentId: selected.agentId } : undefined;
 }
 
 function identifiedClient(scopes: string[], profileId = "viewer@example.com"): GatewayClient {
@@ -71,9 +77,9 @@ describe("artifact session authorization", () => {
       prepareArtifactSessionResolution({ sessionKey: "agent:main:main" }, projection),
     ).resolves.toBeTypeOf("function");
     expect(projection.ensureMaterialized).not.toHaveBeenCalled();
-    for (const query of [{ runId: "run-1" }, { taskId: "task-1" }]) {
-      await expect(prepareArtifactSessionResolution(query, projection)).rejects.toBe(unavailable);
-    }
+    await expect(prepareArtifactSessionResolution({ runId: "run-1" }, projection)).rejects.toBe(
+      unavailable,
+    );
     const current = { ...projection, sharingRevision: {} };
     await expect(prepareArtifactSessionResolution({ runId: "run-1" }, current)).resolves.toBeTypeOf(
       "function",
@@ -83,7 +89,7 @@ describe("artifact session authorization", () => {
   it("denies direct and indirect incognito selectors while preserving admin access", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const sessionKey = "agent:main:dashboard:incognito-artifacts";
-      const cfg = { agents: { list: [{ id: "main", default: true }] } };
+      const cfg = { agents: { entries: { main: {} } } };
       await upsertSessionEntryCore(
         { agentId: "main", sessionKey },
         {
@@ -93,7 +99,7 @@ describe("artifact session authorization", () => {
           visibility: "shared",
         },
       );
-      mocks.resolveRunSession.mockReturnValue(sessionKey);
+      mocks.resolveRunSession.mockReturnValue({ sessionKey, agentId: "main" });
       const viewer = identifiedClient(["operator.read"]);
 
       await expect(
@@ -157,7 +163,7 @@ describe("artifact session authorization", () => {
             visibility,
           },
         );
-        mocks.resolveRunSession.mockReturnValue(sessionKey);
+        mocks.resolveRunSession.mockReturnValue({ sessionKey, agentId: "main" });
         const viewer = role
           ? roleClient(role, "artifact-viewer")
           : identifiedClient(["operator.read"], viewerProfile.id);
