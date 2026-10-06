@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-// Summarizes GitHub Actions run/job timings for CI analysis.
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -22,14 +21,12 @@ function sleepSync(ms) {
 }
 
 function parseJsonCommand(args, onAttempt = null) {
-  let lastError;
-  for (let attempt = 0; attempt <= GH_JSON_RETRY_DELAYS_MS.length; attempt += 1) {
+  for (let attempt = 0; ; attempt += 1) {
     try {
       onAttempt?.();
       const stdout = execPlainGh(args, { encoding: "utf8" });
       return JSON.parse(stdout);
     } catch (error) {
-      lastError = error;
       const message = error instanceof Error ? error.message : String(error);
       const retryable = isRetryableGhJsonErrorMessage(message);
       if (!retryable || attempt === GH_JSON_RETRY_DELAYS_MS.length) {
@@ -38,7 +35,6 @@ function parseJsonCommand(args, onAttempt = null) {
       sleepSync(GH_JSON_RETRY_DELAYS_MS[attempt]);
     }
   }
-  throw lastError;
 }
 
 export function isRetryableGhJsonErrorMessage(message) {
@@ -62,9 +58,6 @@ function normalizeRunJob(job) {
   };
 }
 
-/**
- * Flattens paginated GitHub run job responses.
- */
 export function collectRunJobsFromPages(pages) {
   return pages.flatMap((page) => (Array.isArray(page.jobs) ? page.jobs.map(normalizeRunJob) : []));
 }
@@ -89,7 +82,7 @@ function percentile(values, percentileValue) {
   if (values.length === 0) {
     return null;
   }
-  const sorted = [...values].toSorted((left, right) => left - right);
+  const sorted = values.toSorted((left, right) => left - right);
   const index = Math.min(sorted.length - 1, Math.ceil(sorted.length * percentileValue) - 1);
   return sorted[index];
 }
@@ -137,19 +130,16 @@ function collectRunTimingContext(run) {
   return { created, jobs, updated };
 }
 
-/**
- * Summarizes longest jobs and total timing for a workflow run.
- */
 export function summarizeRunTimings(run, limit = 15) {
   const { created, jobs, updated } = collectRunTimingContext(run);
   if (jobs.length === 0) {
     throw new Error("CI run timing summary requires at least one job");
   }
-  const byDuration = [...jobs]
+  const byDuration = jobs
     .filter((job) => job.durationSeconds !== null)
     .toSorted((left, right) => right.durationSeconds - left.durationSeconds)
     .slice(0, limit);
-  const byStartDelay = [...jobs]
+  const byStartDelay = jobs
     .filter((job) => job.startDelaySeconds !== null && (job.durationSeconds ?? 0) > 5)
     .toSorted((left, right) => right.startDelaySeconds - left.startDelaySeconds)
     .slice(0, limit);
@@ -168,8 +158,6 @@ export function summarizeRunTimings(run, limit = 15) {
 }
 
 /**
- * Selects the latest main push CI run, optionally matching a head SHA.
- *
  * @param {Array<Record<string, unknown>>} runs
  * @param {string | null} [headSha]
  */
@@ -604,9 +592,6 @@ function metricDelta(comparison, prior, key) {
   return comparisonValue === null || priorValue === null ? null : comparisonValue - priorValue;
 }
 
-/**
- * Aggregates main CI runs into a baseline, previous comparison window, and latest window.
- */
 export function summarizeTrendTimings(runs, options) {
   const { compareDurationMs, generatedAtMs, trendDurationMs } = options;
   const baselineFromMs = generatedAtMs - trendDurationMs;
@@ -794,9 +779,6 @@ function printSection(title, jobs, metric) {
   }
 }
 
-/**
- * Parses CI run timing CLI arguments.
- */
 export function parseRunTimingArgs(args) {
   /** @type {{ compareHours: number; detailRuns: number; explicitRunId: string | undefined; json: boolean; limit: number; outputPath: string | null; recentLimit: number | null; trendHours: number | null; useLatestMain: boolean }} */
   const options = {

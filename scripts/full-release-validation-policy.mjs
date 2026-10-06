@@ -809,8 +809,6 @@ function releaseExecutionChildRequired(spec, input, npmTelegramForAll) {
   switch (spec.key) {
     case "npmTelegram":
       return input.rerunGroup === "npm-telegram" || npmTelegramForAll;
-    case "pluginPrereleaseCandidate":
-      return spec.rerunGroups.includes(input.rerunGroup);
     case "releaseChecksCandidate":
       return (
         ["all", "cross-os", "package"].includes(input.rerunGroup) ||
@@ -1477,7 +1475,6 @@ export function terminalPolicyPass(child) {
   return child.status === "completed" && child.conclusion === "success" && failures.length === 0;
 }
 
-/** Choose the single GitHub rerun request that can repair a terminal child's blocking jobs. */
 export function planReleaseChildRerun({ childKey, jobs }) {
   const failed = jobs
     .filter(isFailedJob)
