@@ -399,7 +399,7 @@ export type CodexAttemptThreadInput = Omit<
 const clientsWithEmptySkillCatalog = new WeakSet<CodexAppServerClient>();
 
 /** Keeps lifecycle-only tests independent from native skill catalog contents. */
-export function stubEmptyCodexSkillCatalog(client: CodexAppServerClient): void {
+function stubEmptyCodexSkillCatalog(client: CodexAppServerClient): void {
   if (clientsWithEmptySkillCatalog.has(client)) {
     return;
   }
@@ -419,7 +419,7 @@ export function stubEmptyCodexSkillCatalog(client: CodexAppServerClient): void {
 }
 
 /** Full-attempt fixtures register their transcript identity; cold session preparation has no transcript. */
-export function startOrResumeAttemptThread(params: CodexAttemptThreadInput) {
+function startOrResumeAttemptThread(params: CodexAttemptThreadInput) {
   registerCodexTestSessionIdentity(
     params.params.sessionFile,
     params.params.sessionId,
