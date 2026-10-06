@@ -115,6 +115,29 @@ export class TerminalIntentQueue {
     return this.refreshPending && !this.refreshTimedOut && this.actions.length > 0;
   }
 
+  refreshBeforeReconnect(
+    host: TerminalIntentHost,
+    isConnected: () => boolean,
+    restore?: () => void,
+  ): void {
+    const generation = host.currentGeneration();
+    this.beginRefreshFence(host, generation);
+    restore?.();
+    const release = () => {
+      if (generation !== host.currentGeneration() || !isConnected()) {
+        return;
+      }
+      this.releaseRefreshFence(host);
+    };
+    void import("../../app/sw-refresh.runtime.ts")
+      .then(({ refreshControlUiServiceWorker }) => refreshControlUiServiceWorker())
+      .then((replacementActivated) => {
+        if (!replacementActivated) {
+          release();
+        }
+      }, release);
+  }
+
   beginRefreshFence(host: TerminalIntentHost, generation: number): void {
     this.refreshPending = true;
     this.fenceHost = host;

@@ -67,7 +67,13 @@ export class TerminalPanelSessionController implements TerminalPanelSessionContr
     this.intentHost = {
       bootQueue: this.bootQueue,
       currentGeneration: () => this.lifecycleGeneration,
-      canRun: () => this.terminalActionsCanRun(),
+      canRun: () =>
+        this.host.client !== null &&
+        this.host.client === this.activeClient &&
+        this.host.available &&
+        // Closed lazy shells must not consume work without a rendered viewport.
+        this.host.terminalPanelOpen &&
+        this.host.isConnected,
       attach: (sessionId, agentOwned, cancel) =>
         this.attachSessionNow(sessionId, agentOwned, cancel),
       open: (catalog, agentId, cancel) => this.openSessionNow(catalog, agentId, cancel),
@@ -84,7 +90,7 @@ export class TerminalPanelSessionController implements TerminalPanelSessionContr
             ? this.attachSessionNow(target.sessionId, false, cancel)
             : this.openSessionNow(target?.catalog, agentId, cancel);
         }
-        return this.terminalActionsCanRun();
+        return this.intentHost.canRun();
       },
       hasTabs: () => this.tabs.length > 0,
       requestUpdate: () => this.host.requestUpdate(),
@@ -146,10 +152,40 @@ export class TerminalPanelSessionController implements TerminalPanelSessionContr
     this.hadAvailable = this.host.available;
     // Latest mount executes: on a session route the side-panel terminal takes
     // the queue over from the shell instance still held for the bottom dock.
-    this.intentQueue.bindHost(this.intentHost);
+    this.activateHost();
     // Read after binding: the queue reloads its persisted record for the first
     // panel in a document, so an earlier read would miss a carried-over intent.
     this.updateControllerState({ booting: this.intentQueue.hasActions });
+  }
+
+  /** A retained standalone dock can become the destination without remounting. */
+  activateHost(): void {
+    this.intentQueue.bindHost(this.intentHost);
+  }
+
+  get canHandoffSessions(): boolean {
+    return !this.booting && !this.intentQueue.fenced;
+  }
+
+  handoffSessions(): boolean {
+    if (!this.canHandoffSessions) {
+      return false;
+    }
+    const tabs = this.tabs
+      .filter((tab) => tab.gatewaySessionId && tab.status !== "exited")
+      .toSorted((a, b) => Number(a.id === this.activeId) - Number(b.id === this.activeId));
+    // Keep the complete transfer until the destination claims the document queue.
+    // Last attachment selects the source's active tab without replacing other tabs.
+    for (const tab of tabs) {
+      void this.intentQueue.queue(
+        { kind: "attach", sessionId: tab.gatewaySessionId, agentOwned: tab.agentOwned ?? false },
+        { deferUntilHostChange: true },
+      );
+    }
+    // Retire the source's views, not its PTYs: a retained shell must not replay
+    // stale tabs or selection when a later docking cycle makes it visible again.
+    this.disposeAllTabs();
+    return true;
   }
 
   disconnectHost(): void {
@@ -204,7 +240,11 @@ export class TerminalPanelSessionController implements TerminalPanelSessionContr
       }
     }
     if (reconnecting) {
-      this.refreshBeforeReconnectRestore(shouldRestore);
+      this.intentQueue.refreshBeforeReconnect(
+        this.intentHost,
+        () => this.host.isConnected,
+        shouldRestore ? () => void this.restoreSessions() : undefined,
+      );
     } else if (shouldRestore) {
       void this.restoreSessions();
     } else {
@@ -212,41 +252,8 @@ export class TerminalPanelSessionController implements TerminalPanelSessionContr
     }
   }
 
-  private refreshBeforeReconnectRestore(restore: boolean): void {
-    const generation = this.lifecycleGeneration;
-    this.intentQueue.beginRefreshFence(this.intentHost, generation);
-    if (restore) {
-      void this.restoreSessions();
-    }
-    const release = () => {
-      if (generation !== this.lifecycleGeneration || !this.host.isConnected) {
-        return;
-      }
-      this.intentQueue.releaseRefreshFence(this.intentHost);
-    };
-    void import("../../app/sw-refresh.runtime.ts")
-      .then(({ refreshControlUiServiceWorker }) => refreshControlUiServiceWorker())
-      .then((replacementActivated) => {
-        if (!replacementActivated) {
-          release();
-        }
-      }, release);
-  }
-
   restoreSessions(): Promise<void> {
     return this.intentQueue.queue({ kind: "restore", agentId: this.host.agentId?.trim() || null });
-  }
-
-  private terminalActionsCanRun(): boolean {
-    return (
-      this.host.client !== null &&
-      this.host.client === this.activeClient &&
-      this.host.available &&
-      // A lazy upgrade also mounts the closed shell. Only the visible owner
-      // may consume intent; a viewport-less boot would discard it as failed.
-      this.host.terminalPanelOpen &&
-      this.host.isConnected
-    );
   }
 
   cancelPendingActions(): void {
