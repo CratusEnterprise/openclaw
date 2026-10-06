@@ -61,7 +61,7 @@ test.each(["native", "actor", "actor-changed-after-check"])(
         sessionId: "project-session",
         updatedAt: 1,
         ...(mode !== "actor-changed-after-check" && { spawnedCwd: repo }),
-        ...(actor && { incognito: true }),
+        ...(actor && { incognito: true as const }),
       };
       if (actor) {
         await actor.sessions.create(authority, { sessionKey, entry });
