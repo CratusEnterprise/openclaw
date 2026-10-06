@@ -31,11 +31,11 @@ import { readPendingWorktrees } from "./pending-slots.js";
 import { IDLE_GC_MS, ManagedWorktreeService, SNAPSHOT_RETENTION_MS } from "./service.js";
 import { useManagedWorktreeTestRepository } from "./service.test-support.js";
 import {
-  listTemplates,
-  markTemplateReady,
-  releaseTemplateReader,
-  retainTemplateReader,
-} from "./template-registry.js";
+  listTemplatesAsync,
+  markTemplateReadyAsync,
+  releaseTemplateReaderAsync,
+  retainTemplateReaderAsync,
+} from "./template-registry-async.js";
 
 vi.mock("./filesystem-backend.js", () => ({
   detectWorktreeFilesystemBackend: vi.fn(),
@@ -104,7 +104,7 @@ describe("ManagedWorktreeService filesystem acceleration", () => {
     );
     expect(crashed.every((result) => result.status === "rejected")).toBe(true);
     expect(await readPendingWorktrees(env)).toHaveLength(3);
-    const template = listTemplates(env)[0]!;
+    const template = (await listTemplatesAsync(env))[0]!;
     // Persist the crash boundary with the real owner's rows, then restart its database lifetime.
     runOpenClawStateWriteTransaction(
       ({ db }) => {
@@ -170,7 +170,7 @@ describe("ManagedWorktreeService filesystem acceleration", () => {
     expect((await readPendingWorktrees(env)).every(({ state }) => state === "recovering")).toBe(
       true,
     );
-    expect(listTemplates(env)).toEqual([
+    expect(await listTemplatesAsync(env)).toEqual([
       expect.objectContaining({ status: "ready", id: expect.not.stringMatching(template.id) }),
     ]);
   });
@@ -184,7 +184,7 @@ describe("ManagedWorktreeService filesystem acceleration", () => {
 
     expect(await fs.readdir(created.path)).toEqual([".git"]);
     expect(await git(created.path, "status", "--porcelain")).toBe("");
-    expect(listTemplates(env)).toEqual([]);
+    expect(await listTemplatesAsync(env)).toEqual([]);
     expect(backend.cloneTemplate).not.toHaveBeenCalled();
   });
 
@@ -240,7 +240,10 @@ describe("ManagedWorktreeService filesystem acceleration", () => {
         ).rejects.toThrow();
       }
       if (mode === "invalid") {
-        await fs.writeFile(path.join(listTemplates(env)[0]!.path, "README.md"), "changed template");
+        await fs.writeFile(
+          path.join((await listTemplatesAsync(env))[0]!.path, "README.md"),
+          "changed template",
+        );
       }
       if (mode === "fallback") {
         vi.mocked(backend.cloneTemplate).mockRejectedValueOnce(new Error("clone unavailable"));
@@ -337,7 +340,7 @@ describe("ManagedWorktreeService filesystem acceleration", () => {
     expect(await service.listRegistryRecords()).toEqual(before);
     expect(await git(repo, "branch", "--list", "openclaw/racing")).toBe("");
     expect(await git(repo, "worktree", "list", "--porcelain")).not.toContain("/racing");
-    for (const template of listTemplates(env)) {
+    for (const template of await listTemplatesAsync(env)) {
       await expect(fs.access(path.join(template.path, "large.bin"))).rejects.toMatchObject({
         code: "ENOENT",
       });
@@ -382,7 +385,7 @@ describe("ManagedWorktreeService filesystem acceleration", () => {
 
     const sourceStatus = await git(repo, "status", "--porcelain", "--untracked-files=all");
     const inspectCopy = async (checkout: string) => {
-      const template = listTemplates(env)[0]!;
+      const template = (await listTemplatesAsync(env))[0]!;
       const sourceIndex = path.resolve(
         template.path,
         await git(template.path, "rev-parse", "--git-path", "index"),
@@ -423,7 +426,7 @@ describe("ManagedWorktreeService filesystem acceleration", () => {
       baseRef: "HEAD",
     });
     expect((await git(first.path, "rev-parse", "--absolute-git-dir")).length).toBeGreaterThan(220);
-    const template = listTemplates(env)[0];
+    const template = (await listTemplatesAsync(env))[0];
     assert(template);
     expect(template?.status).toBe("ready");
     await fs.writeFile(path.join(repo, ".env.local"), "second\n");
@@ -450,7 +453,7 @@ describe("ManagedWorktreeService filesystem acceleration", () => {
         expect(copiedMetadata?.cloneId).toBe(sourceMetadata?.cloneId);
       }
     }
-    expect(listTemplates(env).map((entry) => entry.id)).toEqual([template.id]);
+    expect((await listTemplatesAsync(env)).map((entry) => entry.id)).toEqual([template.id]);
     expect(await git(repo, "status", "--porcelain", "--untracked-files=all")).toBe(sourceStatus);
     expect(await fs.readFile(path.join(second.path, "README.md"), "utf8")).toBe("base\n");
     expect(await fs.readFile(path.join(first.path, "README.md"), "utf8")).toBe(
@@ -493,7 +496,7 @@ describe("ManagedWorktreeService filesystem acceleration", () => {
       // replaced by comparing the tree or accepting a clean inventory alone.
       await git(repo, "commit", "--allow-empty", "-m", "new template base");
       await service.create({ repoRoot: repo, name: "seed", baseRef: "HEAD" });
-      const original = listTemplates(env)[0];
+      const original = (await listTemplatesAsync(env))[0];
       assert(original);
       const unusualName = process.platform === "win32" ? "é space.txt" : "é space\nname.txt";
       if (change === "HEAD") {
@@ -511,7 +514,7 @@ describe("ManagedWorktreeService filesystem acceleration", () => {
         baseRef: "HEAD",
       });
 
-      const replacement = listTemplates(env)[0];
+      const replacement = (await listTemplatesAsync(env))[0];
       assert(replacement);
       expect(replacement.id).not.toBe(original.id);
       await expect(fs.access(original.path)).rejects.toMatchObject({ code: "ENOENT" });
@@ -651,18 +654,18 @@ describe("ManagedWorktreeService filesystem acceleration", () => {
       expect.objectContaining({ id: created.id, snapshotRef: removed.snapshotRef }),
     ]);
     expect(await git(repo, "rev-parse", removed.snapshotRef!)).toMatch(/^[a-f0-9]+$/u);
-    expect(listTemplates(env)).toHaveLength(1);
+    expect(await listTemplatesAsync(env)).toHaveLength(1);
     allocation.mockRestore();
 
     expect((await service.gc()).snapshotsPruned).toBe(1);
     expect(await service.listRegistryRecords()).toEqual([]);
     await expect(git(repo, "show-ref", "--verify", removed.snapshotRef!)).rejects.toThrow();
-    expect(listTemplates(env)).toEqual([]);
+    expect(await listTemplatesAsync(env)).toEqual([]);
   });
 
   it("rereads template activity after waiting for its mutation lease", async (ctx) => {
     await service.create({ repoRoot: repo, name: "retained", baseRef: "HEAD" });
-    const template = listTemplates(env)[0];
+    const template = (await listTemplatesAsync(env))[0];
     assert(template);
     now += IDLE_GC_MS + 1;
     const held = createDeferredCore<stateLease.OpenClawStateLeaseContext>();
@@ -702,7 +705,7 @@ describe("ManagedWorktreeService filesystem acceleration", () => {
       );
       const guard = () => lease.assertOwned();
       const reader = "activity-refresh";
-      retainTemplateReader(
+      await retainTemplateReaderAsync(
         env,
         {
           id: template.id,
@@ -713,9 +716,9 @@ describe("ManagedWorktreeService filesystem acceleration", () => {
         guard,
       );
       try {
-        expect(markTemplateReady(env, template.id, now, guard)).toBe(true);
+        expect(await markTemplateReadyAsync(env, template.id, now, guard)).toBe(true);
       } finally {
-        releaseTemplateReader(env, reader, guard);
+        await releaseTemplateReaderAsync(env, reader, guard);
       }
     } finally {
       release.resolve();
@@ -726,7 +729,7 @@ describe("ManagedWorktreeService filesystem acceleration", () => {
       }
     }
     expect((await pending).removed).toEqual([]);
-    expect(listTemplates(env)).toEqual([{ ...template, lastUsedAt: now }]);
+    expect(await listTemplatesAsync(env)).toEqual([{ ...template, lastUsedAt: now }]);
     expect(await fs.readFile(path.join(template.path, "README.md"), "utf8")).toBe("base\n");
   });
 
@@ -821,7 +824,7 @@ describe("ManagedWorktreeService filesystem acceleration", () => {
     "restores saved edits and retains the source template (clone failure=%s)",
     async (cloneFails) => {
       const created = await service.create({ repoRoot: repo, name: "restore", baseRef: "HEAD" });
-      const template = listTemplates(env)[0];
+      const template = (await listTemplatesAsync(env))[0];
       assert(template);
       const originalCommit = await git(created.path, "rev-parse", "HEAD");
       await fs.writeFile(path.join(created.path, "README.md"), "saved edit\n");
@@ -831,7 +834,7 @@ describe("ManagedWorktreeService filesystem acceleration", () => {
         vi.mocked(backend.cloneTemplate).mockRejectedValueOnce(new Error("clone unavailable"));
       }
       const restored = await service.restore({ id: created.id });
-      expect(listTemplates(env).map((entry) => entry.id)).toEqual([template.id]);
+      expect((await listTemplatesAsync(env)).map((entry) => entry.id)).toEqual([template.id]);
       expect(backend.cloneTemplate).toHaveBeenCalledTimes(2);
       expect(await git(restored.path, "rev-parse", "HEAD")).toBe(originalCommit);
       expect(await git(restored.path, "symbolic-ref", "--short", "HEAD")).toBe(created.branch);
@@ -847,7 +850,7 @@ describe("ManagedWorktreeService filesystem acceleration", () => {
         code: "ENOENT",
       });
       const next = await service.create({ repoRoot: repo, name: "after-restore", baseRef: "HEAD" });
-      expect(listTemplates(env).map((entry) => entry.id)).toEqual([template.id]);
+      expect((await listTemplatesAsync(env)).map((entry) => entry.id)).toEqual([template.id]);
       expect(await git(next.path, "status", "--porcelain")).toBe("");
     },
   );
@@ -859,7 +862,7 @@ describe("ManagedWorktreeService filesystem acceleration", () => {
       name: "restore-attributes",
       baseRef: "HEAD",
     });
-    const template = listTemplates(env)[0];
+    const template = (await listTemplatesAsync(env))[0];
     assert(template);
     await fs.writeFile(path.join(created.path, ".gitattributes"), "*.md text eol=crlf\n");
     await service.remove({ id: created.id, reason: "test" });
@@ -868,7 +871,7 @@ describe("ManagedWorktreeService filesystem acceleration", () => {
 
     expect(await fs.readFile(path.join(restored.path, "README.md"), "utf8")).toBe("base\r\n");
     expect(await git(restored.path, "status", "--porcelain")).toBe("?? .gitattributes");
-    expect(listTemplates(env).map((entry) => entry.id)).toEqual([template.id]);
+    expect((await listTemplatesAsync(env)).map((entry) => entry.id)).toEqual([template.id]);
     expect(await fs.readFile(path.join(template.path, "README.md"), "utf8")).toBe("base\n");
   });
 

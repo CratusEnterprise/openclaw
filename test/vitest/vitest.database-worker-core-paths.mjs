@@ -391,6 +391,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/worktrees/service.pending-slots.test.ts",
   "src/agents/worktrees/service.test.ts",
   "src/agents/worktrees/template-cache.test.ts",
+  "src/agents/worktrees/template-registry.test.ts",
   "src/agents/cli-runner/history-boundary.test.ts",
   "src/agents/cli-runner/session-history.test.ts",
   "src/agents/cli-runner/session-history.async.test.ts",
