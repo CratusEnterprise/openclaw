@@ -157,7 +157,9 @@ export function createIncognitoSideDataWorker(
         return withSqlitePostCommitPublications(database.db, () => {
           switch (command.type) {
             case "session.trajectory.retention.prepare": {
-              if (!trajectoryRetention) throw new Error("Trajectory retention was not prepared");
+              if (!trajectoryRetention) {
+                throw new Error("Trajectory retention was not prepared");
+              }
               const state = trajectoryRetention.trajectoryRuntimeRetentionState(database);
               if (!trajectoryRetention.trajectoryRuntimeRetentionDue(state, command.input.now)) {
                 return result(undefined);
@@ -176,7 +178,9 @@ export function createIncognitoSideDataWorker(
               });
             }
             case "session.trajectory.retention.delete": {
-              if (!trajectoryRetention) throw new Error("Trajectory retention was not prepared");
+              if (!trajectoryRetention) {
+                throw new Error("Trajectory retention was not prepared");
+              }
               const retention = trajectoryRetention;
               const batch = retention.selectTrajectoryRuntimeRetentionBatch(
                 database.db,
@@ -191,8 +195,9 @@ export function createIncognitoSideDataWorker(
                   return value;
                 },
               );
-              if (deleted.complete)
+              if (deleted.complete) {
                 retention.trajectoryRuntimeRetentionState(database).sweptAt = command.input.now;
+              }
               return result(deleted);
             }
             case "session.trajectory.append": {

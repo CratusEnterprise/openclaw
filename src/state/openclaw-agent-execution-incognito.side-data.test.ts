@@ -273,7 +273,9 @@ it("refuses maintenance from a replaced source without replaying its committed t
             }
             return value;
           } catch (error) {
-            if (command.type === "session.trajectory.retention.prepare") maintenanceFailure = error;
+            if (command.type === "session.trajectory.retention.prepare") {
+              maintenanceFailure = error;
+            }
             throw error;
           }
         });
@@ -405,7 +407,9 @@ it("preserves native incognito trajectory age and global-budget retention", asyn
         const nativeRuns = [];
         for (const sessionId of names) {
           const events = await loadSqliteTrajectoryRuntimeEvents({ ...native, sessionId });
-          if (events.length) nativeRuns.push({ sessionId, events: events.length });
+          if (events.length) {
+            nativeRuns.push({ sessionId, events: events.length });
+          }
         }
         expect(actorRuns).toEqual(
           nativeRuns.toSorted((a, b) => a.sessionId.localeCompare(b.sessionId)),

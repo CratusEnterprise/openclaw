@@ -170,7 +170,7 @@ export function registerIncognitoHistoryVisibilityTests(fixture: HistoryWiringFi
         if (kind === "acp") {
           await expect(
             history.consume(scope, async () => {
-              const page = await history.http({ target: scope });
+              const preparedPage = await history.http({ target: scope });
               const source = await childActor.sessions.acpSource(authority, childKey);
               const before = childActor.sessions.readSharing(childKey);
               const context = captureOpenClawStateWorkerContext({ env });
@@ -215,7 +215,7 @@ export function registerIncognitoHistoryVisibilityTests(fixture: HistoryWiringFi
                 current.assertCurrent,
               );
               expect(childActor.sessions.readSharing(childKey)).toEqual(before);
-              return page;
+              return preparedPage;
             }),
           ).rejects.toThrow("Prepared ACP session changed");
         }

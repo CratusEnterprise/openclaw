@@ -172,13 +172,13 @@ export function createIncognitoHistoryWorker(
           },
           command.input.stateDatabase,
           () => sources?.sources,
-          (sessionKey) => {
-            if (!isIncognitoSessionKey(sessionKey)) {
+          (sourceSessionKey) => {
+            if (!isIncognitoSessionKey(sourceSessionKey)) {
               return undefined;
             }
-            const hidden = incognitoSources.get(sessionKey);
+            const hidden = incognitoSources.get(sourceSessionKey);
             if (hidden === undefined) {
-              missingSources.add(sessionKey);
+              missingSources.add(sourceSessionKey);
               throw missing;
             }
             return hidden;

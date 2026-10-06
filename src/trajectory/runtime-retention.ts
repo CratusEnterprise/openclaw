@@ -64,9 +64,13 @@ export async function settleIncognitoTrajectoryRuntimeRetention(params: {
           type: "session.trajectory.retention.delete",
           input: { ...prepared, sessionKey: params.input.sessionKey, now },
         });
-        if (result.complete) break;
+        if (result.complete) {
+          break;
+        }
         if (result.refresh) {
-          if (++refreshes > 1) break;
+          if (++refreshes > 1) {
+            break;
+          }
           prepared = await prepare();
         } else {
           prepared = { ...prepared, snapshot: undefined };
