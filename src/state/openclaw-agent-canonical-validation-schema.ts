@@ -48,8 +48,7 @@ function readDefinitions(
             : [],
         ),
       ]
-    : // sqlite-allow-raw -- Unadmitted and authorizer-controlled handles cannot reuse catalog facts.
-      database.prepare(definitionsSql).all();
+    : database.prepare(definitionsSql).all(); // sqlite-allow-raw -- Native schema definitions.
   for (const row of rows) {
     if (typeof row.name !== "string" || typeof row.sql !== "string") {
       throw new Error("Session canonical validation schema has an unreadable definition");
