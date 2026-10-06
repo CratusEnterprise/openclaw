@@ -276,26 +276,27 @@ async function resolveUncachedCodexNativeSkillIsolation(
 > {
   const defaultStateDir = await usesDefaultStateDir();
   let response: CodexSkillsListResponse;
+  let skillPaths: Set<string>;
   try {
     response = await params.client.request(
       "skills/list",
       { cwds: [params.cwd], forceReload: true },
       { signal: params.signal },
     );
+    skillPaths = new Set<string>();
+    for (const entry of response.data) {
+      for (const skill of entry.skills) {
+        if (isUnsupportedCodexVisualizeSkill(skill)) {
+          skillPaths.add(skill.path);
+        }
+      }
+    }
   } catch (error) {
     params.signal?.throwIfAborted();
     if (!defaultStateDir) {
       throw error;
     }
     return DEFAULT_STATE_SKILL_DISCOVERY_UNAVAILABLE;
-  }
-  const skillPaths = new Set<string>();
-  for (const entry of response.data) {
-    for (const skill of entry.skills) {
-      if (isUnsupportedCodexVisualizeSkill(skill)) {
-        skillPaths.add(skill.path);
-      }
-    }
   }
   if (defaultStateDir) {
     return skillPaths.size > 0

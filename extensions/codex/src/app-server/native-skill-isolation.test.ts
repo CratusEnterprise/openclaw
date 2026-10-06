@@ -485,13 +485,25 @@ it.each([
 });
 
 it.each([
-  ["implicit", undefined],
-  ["explicit", ".openclaw"],
-])("keeps %s default-state skill reload failures non-fatal", async (_label, stateDir) => {
-  await withNativeSkillHome(async (home) => {
-    const { client, request } = createFakeCodexAppServerClient(async () => {
+  [
+    "implicit request",
+    undefined,
+    () => {
       throw new Error("skill reload failed");
-    });
+    },
+  ],
+  ["implicit malformed response", undefined, async () => ({})],
+  [
+    "explicit request",
+    ".openclaw",
+    () => {
+      throw new Error("skill reload failed");
+    },
+  ],
+  ["explicit malformed response", ".openclaw", async () => ({})],
+])("keeps %s default-state skill reload failures non-fatal", async (_label, stateDir, respond) => {
+  await withNativeSkillHome(async (home) => {
+    const { client, request } = createFakeCodexAppServerClient(respond);
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
       await expect(
