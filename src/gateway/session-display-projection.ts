@@ -1,6 +1,7 @@
 import { flattenMarkdownToPlainText } from "@openclaw/normalization-core/markdown-plain-text";
 import { asOptionalRecord as readRecord } from "@openclaw/normalization-core/record-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+import { stripUserEnvelopeForDisplay } from "../auto-reply/reply/user-envelope-display.js";
 import { extractAssistantPhaseText } from "../shared/chat-message-content.js";
 import { stripEnvelope } from "./chat-sanitize.js";
 import { isSuppressedControlReplyText } from "./control-reply-text.js";
@@ -62,7 +63,12 @@ export function projectSessionDisplayMessage(
     return null;
   }
   if (role === "user") {
-    text = stripEnvelope(text).trim();
+    // The model-context debug view must keep raw text for auditability; every
+    // other (display) view must not leak internal runtime-context blocks
+    // (e.g. requester_profile metadata) into the human-facing bubble.
+    text = (
+      options.view === "model-context" ? stripEnvelope(text) : stripUserEnvelopeForDisplay(text)
+    ).trim();
   }
   if (options.flattenMarkdown) {
     text = flattenMarkdownToPlainText(text);

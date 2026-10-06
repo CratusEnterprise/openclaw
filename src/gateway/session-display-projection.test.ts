@@ -70,4 +70,57 @@ describe("projectSessionDisplayMessage", () => {
     const quoted = "Use `[[reply_to_current]]` literally.";
     expect(projectSessionDisplayMessage({ role: "assistant", content: quoted })?.text).toBe(quoted);
   });
+
+  test("display view strips internal runtime-context blocks from user text", () => {
+    const withInternalContext =
+      "What is the deploy status?\n\n" +
+      "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\n" +
+      "# requester_profile\n" +
+      "profileId=synthetic-test-001\n" +
+      "email=test@example.invalid\n" +
+      "trustLevel=owner\n" +
+      "<<<END_OPENCLAW_INTERNAL_CONTEXT>>>";
+
+    const preview = projectSessionDisplayMessage({ role: "user", content: withInternalContext });
+
+    expect(preview?.text).toBe("What is the deploy status?");
+  });
+
+  test("model-context view preserves internal runtime-context blocks for debug auditing", () => {
+    const withInternalContext =
+      "What is the deploy status?\n\n" +
+      "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\n" +
+      "# requester_profile\n" +
+      "profileId=synthetic-test-001\n" +
+      "<<<END_OPENCLAW_INTERNAL_CONTEXT>>>";
+
+    const preview = projectSessionDisplayMessage(
+      { role: "user", content: withInternalContext },
+      { view: "model-context" },
+    );
+
+    expect(preview?.text).toBe(withInternalContext);
+  });
+
+  test("display view still strips recognized channel/timestamp envelope headers", () => {
+    const preview = projectSessionDisplayMessage({
+      role: "user",
+      content: "[WebChat 2026-10-06 13:02] What is the deploy status?",
+    });
+
+    expect(preview?.text).toBe("What is the deploy status?");
+  });
+
+  test("display view strips text that merely looks like the internal-context delimiter", () => {
+    // Pre-existing, accepted behavior shared with stripUserEnvelopeForDisplay everywhere
+    // else it's used: delimiter-shaped text from an untrusted sender is not distinguishable
+    // from a real internal-context block, so it is stripped too. This is a fidelity/
+    // availability edge case, not a confidentiality regression.
+    const literalDelimiterText =
+      "See this marker:\n<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\nnot really internal\n<<<END_OPENCLAW_INTERNAL_CONTEXT>>>";
+
+    const preview = projectSessionDisplayMessage({ role: "user", content: literalDelimiterText });
+
+    expect(preview?.text).toBe("See this marker:");
+  });
 });
