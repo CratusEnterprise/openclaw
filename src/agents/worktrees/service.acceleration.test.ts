@@ -8,7 +8,6 @@ import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest"
 import { awaitGateBeforeSettlement } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
-import * as backoff from "../../infra/backoff.js";
 import * as gitExec from "../../infra/git-exec.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import * as commandRunner from "../../process/exec-runner.js";
@@ -26,6 +25,7 @@ import { addManagedWorktree } from "./checkout.js";
 import { detectWorktreeFilesystemBackend } from "./filesystem-backend.js";
 import { createCopyWorktreeBackend } from "./filesystem-backend.test-support.js";
 import type { WorktreeFilesystemBackend } from "./filesystem-backend.types.js";
+import { readPendingWorktrees } from "./pending-slots.js";
 import { IDLE_GC_MS, ManagedWorktreeService, SNAPSHOT_RETENTION_MS } from "./service.js";
 import { useManagedWorktreeTestRepository } from "./service.test-support.js";
 import { listTemplates, touchTemplate } from "./template-registry.js";
@@ -490,7 +490,9 @@ describe("ManagedWorktreeService filesystem acceleration", () => {
     },
   );
 
-  it("preserves an in-progress clone while garbage collection waits for allocation", async () => {
+  it("preserves an in-progress clone while garbage collection skips its pending path", async ({
+    signal,
+  }) => {
     acceleration = false;
     const existing = await service.create({ repoRoot: repo, name: "existing", baseRef: "HEAD" });
     acceleration = true;
@@ -515,17 +517,14 @@ describe("ManagedWorktreeService filesystem acceleration", () => {
         creation,
         "Creation completed without starting a clone",
       );
-      const contended = createDeferredCore();
-      const sleep = backoff.sleepWithAbort;
-      vi.spyOn(backoff, "sleepWithAbort").mockImplementation(async (...args) => {
-        contended.resolve();
-        return await sleep(...args);
-      });
       collection = service.gc();
-      await awaitGateBeforeSettlement(
-        contended.promise,
-        collection,
-        "Collection bypassed the active allocation",
+      await racePromiseWithAbortSignal(
+        awaitGateBeforeSettlement(
+          collection,
+          creation,
+          "Creation completed before collection skipped the pending clone",
+        ),
+        signal,
       );
       expect(await fs.readFile(path.join(destination, "partial.txt"), "utf8")).toBe(
         "in-progress clone\n",
@@ -621,7 +620,7 @@ describe("ManagedWorktreeService filesystem acceleration", () => {
     expect(await fs.readFile(path.join(template.path, "README.md"), "utf8")).toBe("base\n");
   });
 
-  it("fences revoked allocation authority when snapshot and native fallback both fail", async () => {
+  it("fences revoked creation authority when snapshot and native fallback both fail", async () => {
     vi.mocked(backend.cloneTemplate).mockRejectedValueOnce(new Error("snapshot unavailable"));
     let failedDestination: string | undefined;
     vi.spyOn(commandExec, "runCommandWithTimeout").mockImplementation(async (argv, options) => {
@@ -649,7 +648,12 @@ describe("ManagedWorktreeService filesystem acceleration", () => {
       await release.promise;
     });
     await held.promise;
-    const queueCalls = vi.spyOn(gitExec, "enqueueGitRefMutation");
+    const queued = createDeferredCore();
+    const enqueue = gitExec.enqueueGitRefMutation;
+    vi.spyOn(gitExec, "enqueueGitRefMutation").mockImplementation((...args) => {
+      queued.resolve();
+      return enqueue(...args);
+    });
     const pending = service
       .create({
         repoRoot: repo,
@@ -661,24 +665,25 @@ describe("ManagedWorktreeService filesystem acceleration", () => {
         (error: unknown) => error,
       );
     try {
-      await Promise.race([
-        vi.waitFor(() => expect(queueCalls.mock.calls.length).toBe(1), { timeout: 10_000 }),
-        pending.then(() => {
-          throw new Error("Checkout ended before cleanup queued its branch deletion");
-        }),
-      ]);
+      await awaitGateBeforeSettlement(
+        queued.promise,
+        pending,
+        "Checkout ended before cleanup queued its branch deletion",
+      );
       expect(failedDestination).toBeDefined();
       expect(await git(repo, "rev-parse", branch)).toBe(originalHead);
       await expect(fs.access(failedDestination!)).rejects.toMatchObject({ code: "ENOENT" });
+      const [slot] = await readPendingWorktrees(env);
+      assert(slot);
+      expect(slot.record.path).toBe(failedDestination);
       runOpenClawStateWriteTransaction(
         ({ db }) => {
           const changed = executeSqliteQuerySync(
             db,
             getNodeSqliteKysely<Pick<DB, "state_leases">>(db)
-              .updateTable("state_leases")
-              .set({ owner: "successor" })
-              .where("scope", "=", "core:managed-worktrees:create")
-              .where("lease_key", "=", "capacity"),
+              .deleteFrom("state_leases")
+              .where("scope", "=", "core:managed-worktrees:mutation")
+              .where("lease_key", "=", slot.record.id),
           );
           expect(changed.numAffectedRows).toBe(1n);
         },

@@ -1,24 +1,26 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { setImmediate as yieldTurn } from "node:timers/promises";
-import {
-  collectNestedErrorCandidates,
-  extractErrorCode,
-} from "@openclaw/normalization-core/error-coercion";
 import { resolveStateDir } from "../../config/paths.js";
 import { runGitWorkerOperation } from "../../infra/git-worker.js";
 import { createCommandError } from "../../process/command-error.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
+import { OpenClawStateLeaseError } from "../../state/openclaw-state-lease-error.js";
 import { createCrustaceanSlug } from "../session-slug.js";
 import {
   withWorktreeAllocationLease,
+  withWorktreeMutationLease,
   waitForWorktreeCapacity,
   type WorktreeAllocationGuard,
 } from "./allocation.js";
 import { WorktreeCapacityContentionError } from "./capacity.js";
-import { WorktreeRepositoryError } from "./errors.js";
+import {
+  hasWorktreeUnknownOutcome,
+  WorktreePendingContentionError,
+  WorktreeRepositoryError,
+} from "./errors.js";
 import {
   commandError,
   listGitWorktrees,
@@ -30,6 +32,7 @@ import {
 } from "./git.js";
 import { appendNameOrdinal, validateName } from "./name.js";
 import { worktreeOwnerMatches } from "./owner.js";
+import { readPendingWorktrees, releasePendingWorktree } from "./pending-slots.js";
 import { startWorktreePreparationPhase } from "./preparation-timing.js";
 import { readRegistryWorktrees, readLiveRegistryWorktreeByOwner } from "./registry-read.js";
 import { updateRegistryWorktree } from "./registry.js";
@@ -41,6 +44,7 @@ import type {
   ManagedWorktreeCreationOutcome,
   ManagedWorktreeRecord,
   WorktreeWorkerAuthority,
+  WorktreeCreationPublication,
 } from "./types.js";
 
 export async function prepareWorktreeDestination(params: {
@@ -68,11 +72,6 @@ export async function prepareWorktreeDestination(params: {
   return { root, name, worktreePath: path.join(root, name), branch: `openclaw/${name}` };
 }
 
-export type WorktreeCreationPublication = {
-  record?: ManagedWorktreeRecord;
-  cleanup?: (assertCurrent: () => void) => Promise<void>;
-};
-
 export async function createWithWorktreeAllocation(
   params: Pick<
     CreateManagedWorktreeParams,
@@ -88,43 +87,76 @@ export async function createWithWorktreeAllocation(
   rollbackPublished: (record: ManagedWorktreeRecord) => Promise<void>,
 ): Promise<ManagedWorktreeCreationOutcome> {
   for (;;) {
-    const publication: WorktreeCreationPublication = {};
+    const publication: WorktreeCreationPublication = { id: randomUUID() };
     try {
       const allocated = startWorktreePreparationPhase("allocate");
       try {
-        return await withWorktreeAllocationLease(params, (guard) => {
+        return await withWorktreeMutationLease({ ...params, id: publication.id }, async (guard) => {
           allocated();
-          return run(guard, publication);
+          try {
+            return await run(guard, publication);
+          } catch (error) {
+            if (
+              !hasWorktreeUnknownOutcome(error) &&
+              !(
+                error instanceof OpenClawStateLeaseError &&
+                error.code === "OPENCLAW_STATE_LEASE_LOST"
+              ) &&
+              !publication.cleanup &&
+              publication.pending &&
+              !(await worktreePathExists(publication.pending.path))
+            ) {
+              try {
+                // Caller cancellation cannot retire checkout custody before its slot rollback.
+                await releasePendingWorktree(params.env, publication.id, {
+                  leaseSet: guard.workerAuthority.leaseSet,
+                });
+                publication.pending = undefined;
+              } catch (cleanupError) {
+                throw new AggregateError([error, cleanupError], "Worktree slot rollback failed", {
+                  cause: cleanupError,
+                });
+              }
+            }
+            throw error;
+          }
         });
       } finally {
         allocated();
       }
     } catch (error) {
-      if (
-        collectNestedErrorCandidates(error).some(
-          (cause) => extractErrorCode(cause) === "outcome-unknown",
-        )
-      ) {
+      if (hasWorktreeUnknownOutcome(error)) {
         // Uncertain native work retains its checkout, source custody, and byte reservations.
         throw error;
       }
       const failures = [error];
-      if (publication.cleanup) {
+      if (publication.cleanup || publication.pending) {
         try {
-          const cleanup = publication.cleanup;
-          // The failed allocation and source have unwound; keep allocation → source lock order.
-          await withWorktreeAllocationLease({ env: params.env }, async (allocation) => {
-            const remove = async (assertCheckoutCurrent?: () => void) =>
-              await cleanup(() => {
-                allocation.commitGuard();
-                assertCheckoutCurrent?.();
-              });
-            if (params.withRollback) {
-              await params.withRollback(remove);
-            } else {
-              await remove();
-            }
-          });
+          await withWorktreeAllocationLease(
+            { env: params.env, id: publication.id },
+            async (allocation) => {
+              const cleanup = publication.cleanup;
+              if (cleanup) {
+                const remove = async (assertCheckoutCurrent?: () => void) =>
+                  await cleanup(() => {
+                    allocation.commitGuard();
+                    assertCheckoutCurrent?.();
+                  });
+                if (params.withRollback) {
+                  await params.withRollback(remove);
+                } else {
+                  await remove();
+                }
+              }
+              if (publication.pending && !(await worktreePathExists(publication.pending.path))) {
+                await releasePendingWorktree(
+                  params.env,
+                  publication.id,
+                  allocation.workerAuthority,
+                );
+              }
+            },
+          );
         } catch (cleanupError) {
           failures.push(cleanupError);
         }
@@ -140,6 +172,21 @@ export async function createWithWorktreeAllocation(
       if (failures.length > 1) {
         throw new AggregateError(failures, failures.map(String).join("\n"), { cause: error });
       }
+      if (error instanceof WorktreePendingContentionError && !publication.record) {
+        await withWorktreeMutationLease({ ...params, id: error.worktreeId }, async () => {
+          if (
+            (await readPendingWorktrees(params.env)).some(
+              ({ record, state }) => record.id === error.worktreeId && state === "pending",
+            )
+          ) {
+            throw new Error(
+              "Worktree creation did not settle; run openclaw worktrees gc to recover its pending slot",
+              { cause: error },
+            );
+          }
+        });
+        continue;
+      }
       if (error instanceof WorktreeCapacityContentionError && !publication.record) {
         await waitForWorktreeCapacity(error, params);
         continue;
@@ -153,24 +200,31 @@ export type WorktreeSourceCustody = {
   retainSources: (requiredPaths: readonly string[]) => Promise<void>;
 };
 
-/** Creation and restore retain sources while per-checkout retirement runs independently. */
+type WorktreeSourceRepository = Pick<
+  CreateManagedWorktreeParams,
+  "signal" | "ownerKind" | "ownerId" | "name"
+> & {
+  repository: ResolvedRepository;
+  commitGuard: () => void;
+  requiredPaths?: readonly string[];
+  restoringId?: string;
+};
+
+/** Source custody can begin inside allocation and outlive its short reservation interval. */
 export async function withWorktreeSources<T>(
-  params: Pick<CreateManagedWorktreeParams, "signal" | "ownerKind" | "ownerId" | "name"> & {
-    env: NodeJS.ProcessEnv;
-    repository: ResolvedRepository;
-    commitGuard: () => void;
-    requiredPaths?: readonly string[];
-    restoringId?: string;
-  },
-  run: (retainSources: WorktreeSourceCustody["retainSources"]) => Promise<T>,
+  env: NodeJS.ProcessEnv,
+  run: (
+    retainRepository: (
+      params: WorktreeSourceRepository,
+    ) => Promise<WorktreeSourceCustody["retainSources"]>,
+  ) => Promise<T>,
 ): Promise<T> {
-  const context = captureWorktreeRunEndContext(params.env);
+  const context = captureWorktreeRunEndContext(env);
   const held = new Map<string, Awaited<ReturnType<typeof acquireWorktreeRunLease>>>();
-  let outcome: { ok: true; value: T } | { ok: false; error: unknown };
-  try {
+  const retainRepository = async (params: WorktreeSourceRepository) => {
     // Restore already holds this checkout's mutation custody; incomplete recovery
     // must be able to take its removal claim without conflicting with itself.
-    const records = (await readRegistryWorktrees(params.env, { liveOnly: true })).filter(
+    const records = (await readRegistryWorktrees(env, { liveOnly: true })).filter(
       (record) => record.id !== params.restoringId,
     );
     const { repository } = params;
@@ -225,7 +279,7 @@ export async function withWorktreeSources<T>(
         held.set(
           record.id,
           await acquireWorktreeRunLease(record.id, {
-            env: params.env,
+            env,
             source: { context, record },
             ...(missing ? { allowMissingCheckout: true } : {}),
           }),
@@ -238,16 +292,15 @@ export async function withWorktreeSources<T>(
     };
     await retainSources([], true);
     params.commitGuard();
-    outcome = { ok: true, value: await run(retainSources) };
+    return retainSources;
+  };
+  let outcome: { ok: true; value: T } | { ok: false; error: unknown };
+  try {
+    outcome = { ok: true, value: await run(retainRepository) };
   } catch (error) {
     outcome = { ok: false, error };
   }
-  if (
-    outcome.ok ||
-    !collectNestedErrorCandidates(outcome.error).some(
-      (cause) => extractErrorCode(cause) === "outcome-unknown",
-    )
-  ) {
+  if (outcome.ok || !hasWorktreeUnknownOutcome(outcome.error)) {
     const released = await Promise.allSettled(
       [...held.values()].map(async (lease) => await lease.release()),
     );
@@ -338,7 +391,13 @@ async function nameIsUnavailable(
     // crustacean) must never silently resurrect a retired checkout.
     return false;
   }
-  if (registered || (await worktreePathExists(worktreePath))) {
+  if (
+    registered ||
+    (await readPendingWorktrees(env)).some(
+      ({ record }) => record.repoFingerprint === fingerprint && record.name === name,
+    ) ||
+    (await worktreePathExists(worktreePath))
+  ) {
     return true;
   }
   const branch = `openclaw/${name}`;
@@ -624,13 +683,13 @@ export async function runSetupScript(
   }
 }
 
-export async function createOwnedWorktree(
+export async function createOwnedWorktree<T>(
   params: CreateManagedWorktreeParams & WorktreeAllocationGuard & WorktreeSourceCustody,
   repository: ResolvedRepository,
   env: NodeJS.ProcessEnv,
   now: () => number,
-  create: (name: string) => Promise<ManagedWorktreeCreationOutcome>,
-): Promise<ManagedWorktreeCreationOutcome> {
+  create: (name: string) => Promise<T>,
+): Promise<ManagedWorktreeCreationOutcome | T> {
   if (params.ownerId) {
     const existing = await readLiveRegistryWorktreeByOwner(
       captureWorktreeRunEndContext(env),

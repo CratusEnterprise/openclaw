@@ -8,10 +8,13 @@ import type {
 import {
   deleteTemplate,
   hasTemplates,
+  hasTemplateReaders,
   listTemplates,
   markTemplateReady,
   readTemplate,
   reserveTemplate,
+  retainTemplateReader,
+  releaseTemplateReader,
   touchTemplate,
 } from "./template-registry.js";
 
@@ -60,6 +63,18 @@ export const worktreeTemplateOperations = {
   "worktrees.templates.delete": worktreeTemplateMutation(
     "worktrees.templates.delete",
     (env, { id }: { id: string }, commitGuard) => deleteTemplate(env, id, commitGuard),
+  ),
+  "worktrees.templates.retainReader": worktreeTemplateMutation(
+    "worktrees.templates.retainReader",
+    retainTemplateReader,
+  ),
+  "worktrees.templates.releaseReader": worktreeTemplateMutation(
+    "worktrees.templates.releaseReader",
+    (env, { key }: { key: string }, commitGuard) => releaseTemplateReader(env, key, commitGuard),
+  ),
+  "worktrees.templates.hasReaders": worktreeTemplateMutation(
+    "worktrees.templates.hasReaders",
+    (env, { id }: { id: string }, commitGuard) => hasTemplateReaders(env, id, commitGuard),
   ),
 } satisfies WorkerOperationHandlers;
 

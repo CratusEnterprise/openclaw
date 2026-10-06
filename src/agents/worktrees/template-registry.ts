@@ -1,6 +1,12 @@
 import type { DatabaseSync } from "node:sqlite";
+import { safeParseJsonRecord } from "@openclaw/normalization-core/json-coercion";
 import type { Selectable } from "kysely";
+import { classifyGatewayOwnerProcessNamespace } from "../../infra/gateway-lock-payload.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
+import {
+  parseStateLeaseProcessOwner,
+  type StateLeaseProcessOwner,
+} from "../../infra/state-lease-process-owner.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
 import {
   openOpenClawStateDatabase,
@@ -23,8 +29,9 @@ export type WorktreeTemplateRecord = {
   lastUsedAt: number;
 };
 
-type TemplateDatabase = Pick<OpenClawStateKyselyDatabase, "worktree_templates">;
+type TemplateDatabase = Pick<OpenClawStateKyselyDatabase, "worktree_templates" | "state_leases">;
 type TemplateRow = Selectable<TemplateDatabase["worktree_templates"]>;
+const TEMPLATE_READER_SCOPE = "core:managed-worktrees:template-readers";
 
 const ensureTemplateSchema = createOpenClawStateSchemaEnsurer({
   table: "worktree_templates",
@@ -94,8 +101,8 @@ export function listTemplates(env: NodeJS.ProcessEnv): WorktreeTemplateRecord[] 
   ).rows.map(rowToRecord);
 }
 
-// The service holds its allocation lease across filesystem work. This owner
-// fences each durable mutation again inside the shared-state transaction.
+// The cache holds template custody across filesystem work. Durable mutations
+// recheck that custody inside the shared-state transaction.
 function mutateTemplate<T>(
   env: NodeJS.ProcessEnv,
   commitGuard: () => void,
@@ -194,5 +201,100 @@ export function deleteTemplate(
         kyselyFor(db).deleteFrom("worktree_templates").where("id", "=", id),
       ).numAffectedRows === 1n
     );
+  });
+}
+
+/** Readers never expire while a native clone can still borrow template bytes. */
+export function retainTemplateReader(
+  env: NodeJS.ProcessEnv,
+  input: { id: string; key: string; owner: StateLeaseProcessOwner; unpublish?: true },
+  commitGuard: () => void,
+): void {
+  mutateTemplate(env, commitGuard, "agents.worktrees.templates.retain", (db) => {
+    const now = Date.now();
+    if (input.unpublish) {
+      executeSqliteQuerySync(
+        db,
+        kyselyFor(db)
+          .updateTable("worktree_templates")
+          .set({ status: "preparing" })
+          .where("id", "=", input.id),
+      );
+    }
+    executeSqliteQuerySync(
+      db,
+      kyselyFor(db)
+        .insertInto("state_leases")
+        .values({
+          scope: TEMPLATE_READER_SCOPE,
+          lease_key: input.key,
+          owner: input.key,
+          expires_at: null,
+          heartbeat_at: null,
+          payload_json: JSON.stringify({ owner: input.owner, template: input.id }),
+          created_at: now,
+          updated_at: now,
+        }),
+    );
+  });
+}
+
+export function releaseTemplateReader(
+  env: NodeJS.ProcessEnv,
+  key: string,
+  commitGuard: () => void,
+): void {
+  mutateTemplate(env, commitGuard, "agents.worktrees.templates.release", (db) => {
+    executeSqliteQuerySync(
+      db,
+      kyselyFor(db)
+        .deleteFrom("state_leases")
+        .where("scope", "=", TEMPLATE_READER_SCOPE)
+        .where("lease_key", "=", key)
+        .where("owner", "=", key),
+    );
+  });
+}
+
+export function hasTemplateReaders(
+  env: NodeJS.ProcessEnv,
+  id: string,
+  commitGuard: () => void,
+): boolean {
+  return mutateTemplate(env, commitGuard, "agents.worktrees.templates.readers", (db) => {
+    const k = kyselyFor(db);
+    const rows = executeSqliteQuerySync(
+      db,
+      k
+        .selectFrom("state_leases")
+        .select(["lease_key", "owner", "payload_json"])
+        .where("scope", "=", TEMPLATE_READER_SCOPE),
+    ).rows;
+    let retained = false;
+    for (const row of rows) {
+      const payload = safeParseJsonRecord(row.payload_json ?? "");
+      if (typeof payload?.template !== "string") {
+        throw new Error("Worktree template reader is unreadable; template retained");
+      }
+      const owner = parseStateLeaseProcessOwner(row.payload_json);
+      // A dead parent does not prove its native child stopped. Only an older
+      // boot proves those borrowers are gone without an explicit settlement.
+      if (
+        owner?.processNamespace &&
+        classifyGatewayOwnerProcessNamespace(owner.processNamespace) === "dead"
+      ) {
+        executeSqliteQuerySync(
+          db,
+          k
+            .deleteFrom("state_leases")
+            .where("scope", "=", TEMPLATE_READER_SCOPE)
+            .where("lease_key", "=", row.lease_key)
+            .where("owner", "=", row.owner),
+        );
+      } else if (payload.template === id) {
+        retained = true;
+      }
+    }
+    return retained;
   });
 }

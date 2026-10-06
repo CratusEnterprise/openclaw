@@ -1,7 +1,3 @@
-import {
-  collectNestedErrorCandidates,
-  extractErrorCode,
-} from "@openclaw/normalization-core/error-coercion";
 import { verifyOpenClawStateLeaseOwnership } from "../../state/openclaw-state-lease-storage.js";
 import { withOpenClawStateLeasesWorkerAdmission } from "../../state/openclaw-state-lease-worker-owner.js";
 import {
@@ -14,6 +10,7 @@ import {
   WORKTREE_CAPACITY_RESERVATION_SCOPE,
   type WorktreeCapacityContentionError,
 } from "./capacity.js";
+import { hasWorktreeUnknownOutcome } from "./errors.js";
 import type { WorktreeFilesystemOptions } from "./filesystem-backend.types.js";
 import { captureWorktreeRunEndContext, retainWorktreeRunEndFailure } from "./run-end-lifecycle.js";
 import type { WorktreeLeaseSet, WorktreeWorkerAuthority } from "./types.js";
@@ -37,7 +34,7 @@ type WorktreeLeaseParams = {
   workerAuthority?: WorktreeWorkerAuthority;
 };
 
-/** Serialize managed worktree allocations across repositories and processes. */
+/** Serialize slot admission and count-changing maintenance across repositories and processes. */
 export async function withWorktreeAllocationLease<T>(
   params: WorktreeLeaseParams,
   run: (guard: WorktreeAllocationGuard) => Promise<T>,
@@ -170,11 +167,7 @@ async function withWorktreeLease<T>(
               signal.throwIfAborted();
               return result;
             } catch (error) {
-              if (
-                collectNestedErrorCandidates(error).some(
-                  (cause) => extractErrorCode(cause) === "outcome-unknown",
-                )
-              ) {
+              if (hasWorktreeUnknownOutcome(error)) {
                 releaseCapacity = false;
                 retainWorktreeRunEndFailure(error);
                 throw error;

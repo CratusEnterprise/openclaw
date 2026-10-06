@@ -27,6 +27,9 @@ type RunEndCommands = Pick<
   | "worktrees.abortRemoval"
   | "worktrees.insert"
   | "worktrees.update"
+  | "worktrees.reservePending"
+  | "worktrees.releasePending"
+  | "worktrees.recoverPending"
 >;
 type LeaseSetAdmission = Parameters<
   Parameters<typeof withOpenClawStateLeasesWorkerAdmission>[2]

@@ -84,7 +84,7 @@ See [Configuration reference](/gateway/config-runtime#worktreeroot) for the opti
 
 ## Capacity and eviction
 
-`worktreeMaxCount` sets one limit for live managed worktrees across all agents, repositories, and owners sharing the state directory. The default is **4096**. There is no separate per-agent or per-repository count cap. To allow more checkouts on a larger disk, increase it in `openclaw.json`:
+`worktreeMaxCount` sets one limit for live managed worktrees and pending creations across all agents, repositories, and owners sharing the state directory. The default is **4096**. There is no separate per-agent or per-repository count cap. To allow more checkouts on a larger disk, increase it in `openclaw.json`:
 
 ```json5
 {
@@ -93,6 +93,10 @@ See [Configuration reference](/gateway/config-runtime#worktreeroot) for the opti
 ```
 
 The policy is: **squashed/merged first, then by age including unsaved data**. Cleanup prefers branches merged into the repository's default branch, then branches detected as squash-landed, then idle checkouts ordered from oldest to newest by last use. Manual worktrees, moved branches, nested repositories, and unreadable contents do not exempt a managed checkout from the cap. When possible, OpenClaw snapshots dirty contents before purging the checkout, but snapshot failure does not block cap eviction. Commit or otherwise back up work you need to retain.
+
+Creation reserves a persisted slot before preparing files. Name and owner checks happen at that reservation; materialization, ignored-file provisioning, and setup then run independently of other creates. Publication atomically replaces the pending slot with a live record. Concurrent requests for the same owner wait and reuse its completed checkout. Capacity admission waits for an in-progress creation when its slot prevents admission; pending checkouts are never eviction candidates.
+
+A failed creation releases its slot after confirmed cleanup. If the caller crashes or a native operation has an uncertain outcome, `openclaw worktrees gc` reclaims count capacity only after proving the caller is dead. It retains the unfinished checkout and its name in recovery custody and reports its path. Inspect the Git registration and any surviving native processes before manually recovering those files; cleanup does not assume parent-process death stopped a native write. Recovery custody does not publish an incomplete checkout as ready. Existing records need no schema migration. Let pending operations settle before downgrading to a version that does not understand these reservations.
 
 Live owner leases protect active runs. If creation would require evicting an active run, OpenClaw refuses it and names the cap and live owners. Let those runs finish or raise `worktreeMaxCount`, then retry. Background cleanup and create admission share the same capacity owner, including concurrent creates and snapshot restoration. Removed checkouts and their retained snapshots no longer consume a live-worktree slot.
 
@@ -118,13 +122,13 @@ APFS and Btrfs operations use isolated native helpers without changing the Gatew
 
 On Windows, point `worktreeRoot` at a directory on a ReFS volume, such as `D:\worktrees`. ReFS provides file block cloning rather than a writable directory snapshot: OpenClaw creates the directory tree and clones each file's data. Full clusters can share storage; partial file tails and filesystem metadata still consume space. The Gateway needs ordinary file access, not administrator access, to clone worktrees on an existing volume.
 
-OpenClaw maintains one reusable source-only template per repository and destination root. It rebuilds the template when the requested commit or checkout policy changes, and cleanup retires templates unused for seven days. Git continues to own worktree registration, indexes, and branches; the filesystem backend supplies the shared file contents.
+OpenClaw maintains one reusable source-only template per repository and destination root. Concurrent creates share one cold build and retain the ready template while cloning independently. A changed commit or checkout policy rebuilds an unused template; while readers still hold it, that request uses normal Git checkout. Cleanup retires templates unused for seven days once their readers have settled. Uncertain native operations retain template custody; a later boot can establish that the earlier native processes have stopped. Git continues to own worktree registration, indexes, and branches; the filesystem backend supplies the shared file contents.
 
 Private Git index copies for template checkouts and safety snapshots prefer native copy-on-write, including on APFS, and fall back to independent byte copies when cloning is unavailable. Snapshot indexes retain the source index's timestamp boundary so Git still detects edits made within the filesystem's timestamp resolution.
 
 New checkouts with no file data, including empty session workspaces, use normal Git checkout without preparing or cloning a template.
 
-If template cleanup cannot acquire its allocation lease or read its cache, OpenClaw logs a warning and continues ordinary worktree and snapshot cleanup. A later cleanup pass retries template retirement.
+If template cleanup cannot acquire its template lease or read its cache, OpenClaw logs a warning and continues ordinary worktree and snapshot cleanup. A later cleanup pass retries template retirement.
 
 Canonical worktree templates contain checked-out source only. `.worktreeinclude` provisioning and `.openclaw/worktree-setup.sh` still run separately for each new worktree, under their existing permissions. Private sandbox dependency templates follow the separate preparation contract above; they never copy ignored files from the host repository. Copy-on-write snapshots share storage until files change; their actual savings depend on the repository and subsequent writes.
 

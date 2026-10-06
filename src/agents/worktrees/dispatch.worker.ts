@@ -2,6 +2,13 @@ import type {
   WorkerOperationHandlers,
   WorkerOperations,
 } from "../../state/worker-operation-registry.js";
+import {
+  readPendingWorktreesInDatabase,
+  reservePendingWorktreeInDatabase,
+  releasePendingWorktreeInDatabase,
+  recoverPendingWorktreeInDatabase,
+  readWorktreeSlotCountInDatabase,
+} from "./pending-slots.worker.js";
 import { writeProvisionedSnapshotInDatabase } from "./provisioned-snapshot.worker.js";
 import {
   findLiveRegistryWorktreeByOwnerInDatabase,
@@ -35,6 +42,22 @@ import { worktreeRunLeaseOperation } from "./run-lease-store.worker.js";
 import type { ManagedWorktreeOwnerKind } from "./types.js";
 
 export const worktreeOperations = {
+  "worktrees.slotCount": (_input: undefined, { open }) =>
+    readWorktreeSlotCountInDatabase(open().db),
+  "worktrees.pendingSlots": (input: { inspectOwners?: boolean }, { open }) =>
+    readPendingWorktreesInDatabase(open().db, input),
+  "worktrees.reservePending": worktreeRunEndMutation(
+    "worktrees.reservePending",
+    reservePendingWorktreeInDatabase,
+  ),
+  "worktrees.releasePending": worktreeRunEndMutation(
+    "worktrees.releasePending",
+    releasePendingWorktreeInDatabase,
+  ),
+  "worktrees.recoverPending": worktreeRunEndMutation(
+    "worktrees.recoverPending",
+    recoverPendingWorktreeInDatabase,
+  ),
   "worktrees.insert": worktreeRunEndMutation("worktrees.insert", insertRegistryWorktreeInDatabase),
   "worktrees.update": worktreeRunEndMutation("worktrees.update", updateRegistryWorktreeInDatabase),
   "worktrees.claimRemoval": worktreeRunEndMutation(
