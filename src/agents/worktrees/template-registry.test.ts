@@ -12,7 +12,6 @@ import {
   markTemplateReady,
   readTemplate,
   reserveTemplate,
-  touchTemplate,
   type WorktreeTemplateRecord,
 } from "./template-registry.js";
 
@@ -57,7 +56,6 @@ describe("worktree template registry", () => {
 
     reserveTemplate(env, template, guard);
     expect(() => reserveTemplate(env, { ...template, id: "contender" }, guard)).toThrow();
-    expect(touchTemplate(env, template.id, 15, guard)).toBe(false);
     expect(markTemplateReady(env, template.id, 20, guard)).toBe(true);
     closeOpenClawStateDatabaseForTest();
     expect(readTemplate(env, template.cacheKey)).toEqual({
@@ -74,11 +72,9 @@ describe("worktree template registry", () => {
     };
     reserveTemplate(env, replacement, guard);
     expect(markTemplateReady(env, template.id, 30, guard)).toBe(false);
-    expect(touchTemplate(env, template.id, 30, guard)).toBe(false);
     expect(deleteTemplate(env, template.id, guard)).toBe(false);
     expect(markTemplateReady(env, replacement.id, 40, guard)).toBe(true);
-    expect(touchTemplate(env, replacement.id, 50, guard)).toBe(true);
-    expect(listTemplates(env)).toEqual([{ ...replacement, status: "ready", lastUsedAt: 50 }]);
+    expect(listTemplates(env)).toEqual([{ ...replacement, status: "ready", lastUsedAt: 40 }]);
   });
 
   it("rechecks the allocation guard inside a mutation before publishing ready state", () => {

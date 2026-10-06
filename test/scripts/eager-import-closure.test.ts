@@ -103,7 +103,7 @@ it("acquires wrapper leases and manages templates without the application comman
         import assert from "node:assert/strict";
         import {
           deleteTemplateAsync, hasTemplatesAsync, listTemplatesAsync,
-          markTemplateReadyAsync, readTemplateAsync, reserveTemplateAsync, touchTemplateAsync,
+          markTemplateReadyAsync, readTemplateAsync, reserveTemplateAsync,
         } from "./src/agents/worktrees/template-registry-async.js";
         import { withOpenClawStateLease } from "./src/state/openclaw-state-lease.js";
         import {
@@ -133,9 +133,8 @@ it("acquires wrapper leases and manages templates without the application comman
           await reserveTemplateAsync(process.env, template, guard);
           assert.deepEqual(await readTemplateAsync(process.env, template.cacheKey), template);
           assert.equal(await markTemplateReadyAsync(process.env, template.id, 2, guard), true);
-          assert.equal(await touchTemplateAsync(process.env, template.id, 3, guard), true);
           assert.deepEqual(await listTemplatesAsync(process.env), [
-            { ...template, status: "ready", lastUsedAt: 3 },
+            { ...template, status: "ready", lastUsedAt: 2 },
           ]);
           assert.equal(await deleteTemplateAsync(process.env, template.id, guard), true);
           assert.equal(await hasTemplatesAsync(process.env), false);

@@ -127,19 +127,6 @@ export function markTemplateReadyAsync(
   );
 }
 
-export function touchTemplateAsync(
-  env: NodeJS.ProcessEnv,
-  id: string,
-  now: number,
-  commitGuard: () => void,
-): Promise<boolean> {
-  return runTemplateCommand(
-    env,
-    { type: "worktrees.templates.touch", input: { id, now } },
-    commitGuard,
-  );
-}
-
 export function deleteTemplateAsync(
   env: NodeJS.ProcessEnv,
   id: string,

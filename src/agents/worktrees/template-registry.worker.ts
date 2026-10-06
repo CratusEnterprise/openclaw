@@ -15,7 +15,6 @@ import {
   reserveTemplate,
   retainTemplateReader,
   releaseTemplateReader,
-  touchTemplate,
 } from "./template-registry.js";
 
 function worktreeTemplateMutation<Input, Output>(
@@ -54,11 +53,6 @@ export const worktreeTemplateOperations = {
     "worktrees.templates.ready",
     (env, { id, now }: { id: string; now: number }, commitGuard) =>
       markTemplateReady(env, id, now, commitGuard),
-  ),
-  "worktrees.templates.touch": worktreeTemplateMutation(
-    "worktrees.templates.touch",
-    (env, { id, now }: { id: string; now: number }, commitGuard) =>
-      touchTemplate(env, id, now, commitGuard),
   ),
   "worktrees.templates.delete": worktreeTemplateMutation(
     "worktrees.templates.delete",

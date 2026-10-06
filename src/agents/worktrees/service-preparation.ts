@@ -178,7 +178,9 @@ export async function createWithWorktreeAllocation(
         throw new AggregateError(failures, failures.map(String).join("\n"), { cause: error });
       }
       if (error instanceof WorktreePendingContentionError && !publication.record) {
-        await withWorktreeMutationLease({ ...params, id: error.worktreeId }, async () => {
+        await withWorktreeMutationLease({ ...params, id: error.worktreeId }, async () => {});
+        // The creator can die during the wait. Release checkout custody before allocation recovery.
+        await withWorktreeAllocationLease(params, async () => {
           if (
             (await readPendingWorktrees(params.env)).some(
               ({ record, state }) => record.id === error.worktreeId && state === "pending",

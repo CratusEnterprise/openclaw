@@ -28,6 +28,7 @@ import { captureWorktreeRunEndContext } from "./run-end-lifecycle.js";
 import { createWithWorktreeAllocation } from "./service-preparation.js";
 import { ManagedWorktreeService } from "./service.js";
 import { useManagedWorktreeTestRepository } from "./service.test-support.js";
+import type { ManagedWorktreeRecord } from "./types.js";
 
 describe("managed worktree pending slots", () => {
   const initializeRepository = useManagedWorktreeTestRepository();
@@ -78,6 +79,28 @@ describe("managed worktree pending slots", () => {
       },
     );
     return waiting.promise;
+  }
+
+  function markPendingOwnerDead(record: ManagedWorktreeRecord) {
+    runOpenClawStateWriteTransaction(
+      ({ db }) => {
+        executeSqliteQuerySync(
+          db,
+          getNodeSqliteKysely<Pick<DB, "state_leases">>(db)
+            .updateTable("state_leases")
+            .set({
+              payload_json: JSON.stringify({
+                state: "pending",
+                record,
+                owner: { pid: 2147483647, host: hostname(), startedAt: null },
+              }),
+            })
+            .where("scope", "=", "core:managed-worktrees:pending-slots")
+            .where("lease_key", "=", record.id),
+        );
+      },
+      { env },
+    );
   }
 
   it("keeps one contention budget when creation retries after another holder settles", async () => {
@@ -355,6 +378,67 @@ describe("managed worktree pending slots", () => {
     }
   });
 
+  it.for(["owner", "capacity"] as const)(
+    "recovers a creator that dies while a %s contender waits for custody",
+    async (contention, { signal }) => {
+      config.worktreeMaxCount = 1;
+      const entered = createDeferred();
+      const release = createDeferred();
+      const failure = new CommandProcessCleanupError();
+      const execute = gitExec.executeGitCommand;
+      let firstMaterialization = true;
+      vi.spyOn(gitExec, "executeGitCommand").mockImplementation(async (cwd, args, options) => {
+        if (firstMaterialization && args[0] === "read-tree" && args.includes("-u")) {
+          firstMaterialization = false;
+          await fs.writeFile(path.join(cwd, "partial.txt"), "uncertain native output\n");
+          entered.resolve();
+          await release.promise;
+          throw failure;
+        }
+        return await execute(cwd, args, options);
+      });
+      const owner = { ownerKind: "session" as const, ownerId: "agent:main:crashed" };
+      const crashed = service.create({ repoRoot, name: "crashed", baseRef: "HEAD", ...owner });
+      const operations: Promise<unknown>[] = [crashed];
+      try {
+        await withinTest(
+          awaitGateBeforeSettlement(entered.promise, crashed, "Checkout did not materialize"),
+          signal,
+        );
+        const [pending] = await readPendingWorktrees(env);
+        expect(pending).toBeDefined();
+        const record = pending!.record;
+        const waiting = observePendingWait(record.id);
+        const retry = service.create({
+          repoRoot,
+          suggestedName: "crashed",
+          baseRef: "HEAD",
+          ...owner,
+          ownerId: contention === "owner" ? owner.ownerId : "agent:main:replacement",
+        });
+        operations.push(retry);
+        await withinTest(
+          awaitGateBeforeSettlement(waiting, retry, "Contender did not wait for checkout custody"),
+          signal,
+        );
+        markPendingOwnerDead(record);
+        release.resolve();
+        await expect(withinTest(crashed, signal)).rejects.toThrow(failure.message);
+        const replacement = await withinTest(retry, signal);
+        expect(replacement.name).toBe("crashed-2");
+        expect(await fs.readFile(path.join(replacement.path, "README.md"), "utf8")).toBe("base\n");
+        expect(await fs.readFile(path.join(record.path, "partial.txt"), "utf8")).toBe(
+          "uncertain native output\n",
+        );
+        expect(await readPendingWorktrees(env)).toEqual([{ record, state: "recovering" }]);
+        expect((await service.listRegistryRecords()).map(({ id }) => id)).toEqual([replacement.id]);
+      } finally {
+        release.resolve();
+        await Promise.allSettled(operations);
+      }
+    },
+  );
+
   it.each(["materialization", "publication"] as const)(
     "rolls back the slot and registration after %s fails",
     async (stage) => {
@@ -421,27 +505,18 @@ describe("managed worktree pending slots", () => {
       expect(await fs.readFile(path.join(record.path, "partial.txt"), "utf8")).toBe(
         "uncertain native output\n",
       );
-      runOpenClawStateWriteTransaction(
-        ({ db }) => {
-          executeSqliteQuerySync(
-            db,
-            getNodeSqliteKysely<Pick<DB, "state_leases">>(db)
-              .updateTable("state_leases")
-              .set({
-                payload_json: JSON.stringify({
-                  state: "pending",
-                  record,
-                  owner: { pid: 2147483647, host: hostname(), startedAt: null },
-                }),
-              })
-              .where("scope", "=", "core:managed-worktrees:pending-slots")
-              .where("lease_key", "=", record.id),
-          );
-        },
-        { env },
-      );
+      markPendingOwnerDead(record);
       const recovered = await service.gc();
-      expect(recovered.removed).toEqual([]);
+      expect(recovered).toMatchObject({
+        removed: [],
+        outcome: "partial",
+        eligibleCount: 0,
+        deferredCount: 0,
+        failedCount: 1,
+        orphansDeleted: 0,
+        orphansRetired: 0,
+        issues: [expect.objectContaining({ stage: "orphans", outcome: "failed", id: record.id })],
+      });
       expect(recovered.retiredCheckoutPaths).toContain(record.path);
       expect(await readPendingWorktrees(env)).toEqual([
         expect.objectContaining({ record, state: "recovering" }),

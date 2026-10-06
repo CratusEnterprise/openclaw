@@ -30,7 +30,12 @@ import type { WorktreeFilesystemBackend } from "./filesystem-backend.types.js";
 import { readPendingWorktrees } from "./pending-slots.js";
 import { IDLE_GC_MS, ManagedWorktreeService, SNAPSHOT_RETENTION_MS } from "./service.js";
 import { useManagedWorktreeTestRepository } from "./service.test-support.js";
-import { listTemplates, touchTemplate } from "./template-registry.js";
+import {
+  listTemplates,
+  markTemplateReady,
+  releaseTemplateReader,
+  retainTemplateReader,
+} from "./template-registry.js";
 
 vi.mock("./filesystem-backend.js", () => ({
   detectWorktreeFilesystemBackend: vi.fn(),
@@ -655,17 +660,18 @@ describe("ManagedWorktreeService filesystem acceleration", () => {
     expect(listTemplates(env)).toEqual([]);
   });
 
-  it("rereads template activity after waiting for the allocation lease", async (ctx) => {
+  it("rereads template activity after waiting for its mutation lease", async (ctx) => {
     await service.create({ repoRoot: repo, name: "retained", baseRef: "HEAD" });
     const template = listTemplates(env)[0];
     assert(template);
     now += IDLE_GC_MS + 1;
     const held = createDeferredCore<stateLease.OpenClawStateLeaseContext>();
     const release = createDeferredCore();
+    const templateKey = `template:${template.cacheKey}`;
     const holder = stateLease.withOpenClawStateLease(
       {
-        scope: "core:managed-worktrees:create",
-        key: "capacity",
+        scope: "core:managed-worktrees:mutation",
+        key: templateKey,
         database: { scope: "shared", options: { env } },
         leaseMs: 60_000,
         waitMs: 0,
@@ -676,27 +682,41 @@ describe("ManagedWorktreeService filesystem acceleration", () => {
       },
     );
     const lease = await held.promise;
-    const allocationRequested = createDeferredCore();
+    const templateRequested = createDeferredCore();
     const acquireLease = stateLease.withOpenClawStateLeaseAsync;
-    const allocation = vi
-      .spyOn(stateLease, "withOpenClawStateLeaseAsync")
-      .mockImplementation((...args) => {
-        allocationRequested.resolve();
-        return acquireLease(...args);
-      });
+    vi.spyOn(stateLease, "withOpenClawStateLeaseAsync").mockImplementation((options, ...args) => {
+      if (options.scope === "core:managed-worktrees:mutation" && options.key === templateKey) {
+        templateRequested.resolve();
+      }
+      return acquireLease(options, ...args);
+    });
     const pending = service.gc();
     try {
       await racePromiseWithAbortSignal(
-        Promise.race([
-          allocationRequested.promise,
-          pending.then(() => {
-            throw new Error("Collection completed without requesting the allocation lease");
-          }),
-        ]),
+        awaitGateBeforeSettlement(
+          templateRequested.promise,
+          pending,
+          "Collection completed without requesting template custody",
+        ),
         ctx.signal,
       );
-      expect(allocation).toHaveBeenCalledTimes(1);
-      expect(touchTemplate(env, template.id, now, () => lease.assertOwned())).toBe(true);
+      const guard = () => lease.assertOwned();
+      const reader = "activity-refresh";
+      retainTemplateReader(
+        env,
+        {
+          id: template.id,
+          key: reader,
+          owner: { pid: process.pid, host: hostname(), startedAt: null },
+          unpublish: true,
+        },
+        guard,
+      );
+      try {
+        expect(markTemplateReady(env, template.id, now, guard)).toBe(true);
+      } finally {
+        releaseTemplateReader(env, reader, guard);
+      }
     } finally {
       release.resolve();
       try {

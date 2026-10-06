@@ -168,26 +168,6 @@ export function markTemplateReady(
   });
 }
 
-export function touchTemplate(
-  env: NodeJS.ProcessEnv,
-  id: string,
-  now: number,
-  commitGuard: () => void,
-): boolean {
-  return mutateTemplate(env, commitGuard, "agents.worktrees.templates.touch", (db) => {
-    return (
-      executeSqliteQuerySync(
-        db,
-        kyselyFor(db)
-          .updateTable("worktree_templates")
-          .set({ last_used_at: now })
-          .where("id", "=", id)
-          .where("status", "=", "ready"),
-      ).numAffectedRows === 1n
-    );
-  });
-}
-
 /** A stale cleanup must never delete a replacement occupying the same cache key. */
 export function deleteTemplate(
   env: NodeJS.ProcessEnv,
