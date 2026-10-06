@@ -4,6 +4,7 @@ import path from "node:path";
 import { isPathInside } from "openclaw/plugin-sdk/file-access-runtime";
 import { resolveRequiredHomeDir, resolveStateDir } from "openclaw/plugin-sdk/state-paths";
 import type { CodexAppServerClient } from "./client.js";
+import type { CodexSkillsListResponse } from "./protocol-control-plane.js";
 import type { JsonObject, JsonValue } from "./protocol.js";
 
 export type CodexNativeSkillIsolation = {
@@ -106,18 +107,14 @@ async function collectImplicitDefaultVisualizeSkillPaths(params: {
           );
         }
       }
-    } catch (error) {
-      if (!isMissingPathError(error)) {
-        throw error;
-      }
+    } catch {
+      // Default-state suppression is best effort: discovery must not block a Codex turn.
     }
     for (const candidate of candidates) {
       try {
         skillPaths.add(await fs.realpath(candidate));
-      } catch (error) {
-        if (!isMissingPathError(error)) {
-          throw error;
-        }
+      } catch {
+        // A missing or unreadable cache entry only leaves that skill unsuppressed.
       }
     }
   }
@@ -323,11 +320,24 @@ export async function resolveCodexNativeSkillIsolation(params: {
 async function resolveUncachedCodexNativeSkillIsolation(
   params: Parameters<typeof resolveCodexNativeSkillIsolation>[0],
 ): Promise<CodexNativeSkillIsolation | undefined> {
-  const response = await params.client.request(
-    "skills/list",
-    { cwds: [params.cwd], forceReload: true },
-    { signal: params.signal },
-  );
+  const defaultStateDir = await usesDefaultStateDir();
+  let response: CodexSkillsListResponse;
+  try {
+    response = await params.client.request(
+      "skills/list",
+      { cwds: [params.cwd], forceReload: true },
+      { signal: params.signal },
+    );
+  } catch (error) {
+    params.signal?.throwIfAborted();
+    if (!defaultStateDir) {
+      throw error;
+    }
+    const disabledUserSkillPaths = await collectImplicitDefaultVisualizeSkillPaths(params);
+    return disabledUserSkillPaths.length > 0
+      ? { disabledUserSkillPaths, suppressNativeSkillInstructions: false }
+      : undefined;
+  }
   const skillPaths = new Set<string>();
   for (const entry of response.data) {
     for (const skill of entry.skills) {
@@ -336,7 +346,7 @@ async function resolveUncachedCodexNativeSkillIsolation(
       }
     }
   }
-  if (await usesDefaultStateDir()) {
+  if (defaultStateDir) {
     return skillPaths.size > 0
       ? {
           disabledUserSkillPaths: [...skillPaths].toSorted((left, right) =>

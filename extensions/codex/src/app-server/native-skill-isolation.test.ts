@@ -488,6 +488,71 @@ it.each([
   });
 });
 
+it("falls back to the bundled cache when default-state skill reload fails", async () => {
+  await withNativeSkillHome(async (home) => {
+    const visualizeSkill = path.join(
+      home,
+      ".codex",
+      "plugins",
+      "cache",
+      "openai-bundled",
+      "visualize",
+      "skills",
+      "visualize",
+      "SKILL.md",
+    );
+    await fs.mkdir(path.dirname(visualizeSkill), { recursive: true });
+    await fs.writeFile(visualizeSkill, "visualize");
+    const { client } = createFakeCodexAppServerClient(async () => {
+      throw new Error("skill reload failed");
+    });
+
+    const isolation = await withEnvAsync(
+      { CODEX_HOME: undefined, HOME: home, OPENCLAW_STATE_DIR: path.join(home, ".openclaw") },
+      async () => await resolveCodexNativeSkillIsolation({ client, cwd: home }),
+    );
+    expect(isolation).toEqual({
+      disabledUserSkillPaths: [visualizeSkill],
+      suppressNativeSkillInstructions: false,
+    });
+  });
+});
+
+it("does not block implicit default-state threads when the bundled cache is unreadable", async () => {
+  await withNativeSkillHome(async (home) => {
+    const visualizeRoot = path.join(
+      home,
+      ".codex",
+      "plugins",
+      "cache",
+      "openai-bundled",
+      "visualize",
+    );
+    const readdir = fs.readdir;
+    const readdirSpy = vi.spyOn(fs, "readdir").mockImplementation(async (...args) => {
+      if (args[0] === visualizeRoot) {
+        throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+      }
+      return await readdir(...args);
+    });
+    const { client, request } = createFakeCodexAppServerClient(async () => {
+      throw new Error("skills/list must not be called");
+    });
+
+    try {
+      await expect(
+        withEnvAsync(
+          { CODEX_HOME: undefined, HOME: home, OPENCLAW_STATE_DIR: undefined },
+          async () => await resolveCodexNativeSkillIsolation({ client, cwd: home }),
+        ),
+      ).resolves.toBe(undefined);
+      expect(request).not.toHaveBeenCalled();
+    } finally {
+      readdirSpy.mockRestore();
+    }
+  });
+});
+
 it("preserves direct skills under a state-owned default Codex home", async () => {
   return withNativeSkillHome(async (stateHome) => {
     const skillPath = path.join(stateHome, ".codex", "skills", "state-owned", "SKILL.md");
