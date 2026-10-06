@@ -440,10 +440,20 @@ export function startOrResumeThreadWithEmptySkillCatalog(
   return startOrResumeThreadImpl(params);
 }
 
-export function startOrResumeThread(
+export function startOrResumeThreadWithoutSkills(
   params: Omit<Parameters<typeof startOrResumeThreadImpl>[0], "bindingStore">,
 ) {
   return startOrResumeThreadWithEmptySkillCatalog({
+    signal: new AbortController().signal,
+    ...params,
+    bindingStore: testCodexAppServerBindingStore,
+  });
+}
+
+export function startOrResumeThread(
+  params: Omit<Parameters<typeof startOrResumeThreadImpl>[0], "bindingStore">,
+) {
+  return startOrResumeThreadImpl({
     signal: new AbortController().signal,
     ...params,
     bindingStore: testCodexAppServerBindingStore,
