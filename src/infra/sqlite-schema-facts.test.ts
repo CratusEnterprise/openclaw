@@ -17,6 +17,7 @@ import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import { runSqlitePinnedReadSnapshotSync } from "./sqlite-pinned-read-snapshot.js";
 import {
   admitSqliteSchema,
+  adoptSqliteSchemaFacts,
   getAdmittedSqliteSchemaFacts,
   readSqliteCacheDataVersion,
   readSqliteDataVersion,
@@ -168,6 +169,26 @@ describe("admitted SQLite schema facts", () => {
     } finally {
       observation.restore();
     }
+  });
+
+  it("invalidates derived column facts when adopting a foreign schema publication", () => {
+    const filename = path.join(tempDirs.make("openclaw-schema-adoption-"), "state.sqlite");
+    const reader = openDatabase("CREATE TABLE session_nodes (id INTEGER)", true, filename);
+    expect(hasSqliteSessionOwnerColumns(reader)).toBe(false);
+    const writer = new DatabaseSync(filename);
+    databases.push(writer);
+    writer.exec(`
+      ALTER TABLE session_nodes ADD COLUMN owner_actor_type TEXT;
+      ALTER TABLE session_nodes ADD COLUMN owner_actor_id TEXT;
+      ALTER TABLE session_nodes ADD COLUMN owner_assigned_by_type TEXT;
+      ALTER TABLE session_nodes ADD COLUMN owner_assigned_by_id TEXT;
+      ALTER TABLE session_nodes ADD COLUMN owner_assigned_at INTEGER;
+    `);
+    const publisher = openDatabase("", true, filename);
+    const facts = getAdmittedSqliteSchemaFacts(publisher);
+    expect(facts).toBeDefined();
+    expect(adoptSqliteSchemaFacts(reader, facts!)).toBe(true);
+    expect(hasSqliteSessionOwnerColumns(reader)).toBe(true);
   });
 
   it.each(["transaction", "implicit snapshot"])(
