@@ -119,7 +119,7 @@ describe("createGatewayKernel", () => {
           },
           controlUiEnabled: false,
           sidecarStartup: "defer",
-          tryRecoverChannelAutostartSuppression: () => true,
+          tryRecoverChannelAutostartSuppression: async () => true,
         });
 
         await expect(kernel.channelManager.recoverAutostartSuppression()).resolves.toBe(true);

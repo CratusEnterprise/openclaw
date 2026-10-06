@@ -1,5 +1,6 @@
 import { setImmediate as nextTurn } from "node:timers/promises";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { inspectGatewayCrashLoopBreakerAsync } from "../infra/gateway-boot-lifecycle.js";
 import type { PluginHookGatewayCronService } from "../plugins/hook-gateway.types.js";
 import type { createHookRunner } from "../plugins/hooks.js";
 import type { PluginRegistry } from "../plugins/registry.js";
@@ -26,6 +27,9 @@ export async function markGatewayStartupMainSessionOrphans(params: {
 }): Promise<void> {
   await measureStartup(params.startupTrace, "sidecars.main-session-recovery", async () => {
     try {
+      if ((await inspectGatewayCrashLoopBreakerAsync()).recoveryPausedUntilMs !== undefined) {
+        return;
+      }
       const { markStartupOrphanedMainSessionsForRecovery } = await measureStartup(
         params.startupTrace,
         "sidecars.main-session-recovery-load",

@@ -28,6 +28,7 @@ import { resolveAgentRestartRecoveryExecutionIdentityAdmission } from "../../gat
 import { callGateway } from "../../gateway/call.js";
 import type { RestartRecoveryCandidate } from "../../gateway/chat-abort.js";
 import type { GatewayRecoveryRuntime } from "../../gateway/server-instance-runtime.types.js";
+import { createMockGatewayRecoveryRuntime } from "../../gateway/server-recovery-runtime.test-support.js";
 import { persistGatewaySessionLifecycleEvent } from "../../gateway/session-lifecycle-state.js";
 import {
   getAgentEventLifecycleGeneration,
@@ -3598,12 +3599,10 @@ describe("main-session-restart-recovery", () => {
           message: "resume",
           sessionKey: "agent:main:main",
         },
-        gatewayRuntime: {
-          dispatchSessionMethod: vi.fn(),
+        gatewayRuntime: createMockGatewayRecoveryRuntime({
           dispatchAgent: dispatchAgent as GatewayRecoveryRuntime["dispatchAgent"],
-          sendRecoveryNotice: vi.fn(),
           waitForAgent: vi.fn(),
-        },
+        }),
       });
 
       await vi.advanceTimersByTimeAsync(10_000);
@@ -3656,8 +3655,7 @@ describe("main-session-restart-recovery", () => {
         expectedSessionId: "main-session",
         sessionKey: "agent:main:main",
         storePath,
-        gatewayRuntime: {
-          dispatchSessionMethod: vi.fn(),
+        gatewayRuntime: createMockGatewayRecoveryRuntime({
           dispatchAgent: dispatchAgent as GatewayRecoveryRuntime["dispatchAgent"],
           waitForAgent: vi.fn(async () => ({
             runId: "recovery-main",
@@ -3665,8 +3663,7 @@ describe("main-session-restart-recovery", () => {
             timeoutPhase: "queue",
             providerStarted: false,
           })) as GatewayRecoveryRuntime["waitForAgent"],
-          sendRecoveryNotice: vi.fn(),
-        },
+        }),
       });
 
       expect(result).toEqual({ started: 0, settled: 0, failed: 1, skipped: 0 });
@@ -3793,8 +3790,7 @@ describe("main-session-restart-recovery", () => {
           expectedSessionId: "main-session",
           sessionKey: "agent:main:main",
           storePath,
-          gatewayRuntime: {
-            dispatchSessionMethod: vi.fn(),
+          gatewayRuntime: createMockGatewayRecoveryRuntime({
             dispatchAgent: dispatchAgent as GatewayRecoveryRuntime["dispatchAgent"],
             waitForAgent: vi.fn(async () => ({
               runId: "recovery-main",
@@ -3802,8 +3798,7 @@ describe("main-session-restart-recovery", () => {
               timeoutPhase: "queue",
               providerStarted: false,
             })) as GatewayRecoveryRuntime["waitForAgent"],
-            sendRecoveryNotice: vi.fn(),
-          },
+          }),
         });
 
         await accepted.promise;

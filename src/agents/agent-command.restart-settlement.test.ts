@@ -123,6 +123,7 @@ it.each(["unknown", "delivered"] as const)(
       throw new Error("A terminal final must not dispatch recovery work");
     });
     const gatewayRuntime: GatewayRecoveryRuntime = {
+      prepareRestartRecovery: async () => {},
       dispatchAgent: unexpectedDispatch,
       dispatchSessionMethod: unexpectedDispatch,
       sendRecoveryNotice: unexpectedDispatch,

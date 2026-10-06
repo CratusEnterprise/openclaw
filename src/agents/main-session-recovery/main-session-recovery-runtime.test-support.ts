@@ -64,6 +64,7 @@ export function createRecoveryRuntimeFixture(params: {
     }
   };
   return {
+    prepareRestartRecovery: async () => {},
     async expectAdmission(
       expectedGatewayCalls: number,
       recovery: { stop: () => Promise<void> },

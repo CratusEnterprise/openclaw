@@ -135,6 +135,7 @@ const { maybeWakeRequesterAfterAllChildrenSettled: wakeRequester } = await vi.im
 
 function createGatewayContext() {
   const recoveryRuntime: GatewayRequestContext["recoveryRuntime"] = {
+    prepareRestartRecovery: async () => {},
     dispatchAgent: (params, timeoutMs) => callGateway({ method: "agent", params, timeoutMs }),
     waitForAgent: (params, timeoutMs, signal) =>
       callGateway({ method: "agent.wait", params, timeoutMs, signal }),

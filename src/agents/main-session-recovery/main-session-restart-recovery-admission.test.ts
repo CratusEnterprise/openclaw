@@ -10,8 +10,17 @@ import {
   replaceSessionEntry,
 } from "../../config/sessions/session-accessor.js";
 import { callGateway } from "../../gateway/call.js";
+import { markGatewayStartupMainSessionOrphans } from "../../gateway/server-startup-observers.js";
 import * as transcriptReaders from "../../gateway/session-transcript-readers.js";
-import { resetAgentEventsForTest } from "../../infra/agent-events.js";
+import {
+  resetAgentEventsForTest,
+  rotateAgentEventLifecycleGeneration,
+} from "../../infra/agent-events.js";
+import {
+  GATEWAY_CRASH_LOOP_BREAKER_REASON,
+  completeGatewayBootLifecycle,
+  recordGatewayBootStart,
+} from "../../infra/gateway-boot-lifecycle.js";
 import * as gatewayWorkAdmission from "../../process/gateway-work-admission.js";
 import {
   getActiveGatewayRootWorkCount,
@@ -114,6 +123,137 @@ describe("startup recovery admission", () => {
       );
     }
   }
+
+  it.for(["resume", "crash", "stop", "replace", "healthy"] as const)(
+    "preserves interrupted turns through crash-loop quarantine (%s)",
+    async (action, { signal }) => {
+      const target = await makeMainSessionFixture({
+        mainRestartRecovery: { cycleId: "paused-cycle", revision: 1, chargedAttempts: 2 },
+      });
+      await writeCompletedToolTranscript(target.sessionsDir);
+      const before = structuredClone(loadSessionEntry(target));
+      const env = { ...process.env, OPENCLAW_STATE_DIR: tmpDir };
+      const now = Date.now();
+      if (action !== "healthy") {
+        for (let i = 0; i < 3; i++) {
+          const boot = recordGatewayBootStart(env, now - 295_000 + i);
+          completeGatewayBootLifecycle(boot, { outcome: "startup_failed" }, env, now - 295_000 + i);
+        }
+        recordGatewayBootStart(env, now - 290_000, GATEWAY_CRASH_LOOP_BREAKER_REASON);
+      } else {
+        // Two previous crashes plus the live boot must not independently trip safe mode.
+        for (let i = 0; i < 2; i++) {
+          const boot = recordGatewayBootStart(env, now - 1_000 + i);
+          completeGatewayBootLifecycle(boot, { outcome: "startup_failed" }, env, now - 1_000 + i);
+        }
+        recordGatewayBootStart(env, now);
+      }
+      const startupCheckedStorePaths = new Set<string>();
+      const notice = vi.spyOn(gatewayRuntime, "sendRecoveryNotice");
+      if (action === "resume") {
+        await withEnvAsync({ OPENCLAW_STATE_DIR: tmpDir }, () =>
+          markGatewayStartupMainSessionOrphans({
+            cfg: {},
+            startupCheckedStorePaths,
+            log: { warn: vi.fn() },
+          }),
+        );
+        expect(loadSessionEntry(target)).toEqual(before);
+        expect(startupCheckedStorePaths.size).toBe(0);
+      }
+      const paused = createDeferred();
+      const warn = vi.spyOn(mainSessionRecoveryLog, "warn").mockImplementation((message) => {
+        paused.reject(new Error(message));
+      });
+      const completed = createDeferred();
+      const dispatched = createDeferred();
+      const info = vi.spyOn(mainSessionRecoveryLog, "info").mockImplementation((message) => {
+        if (message.includes("restart recovery paused until")) {
+          if (!vi.isFakeTimers()) {
+            vi.useFakeTimers();
+            vi.setSystemTime(now);
+          }
+          paused.resolve();
+        }
+        if (message.includes("startup complete:")) {
+          completed.resolve();
+        }
+      });
+      vi.mocked(callGateway).mockImplementation(async () => {
+        dispatched.resolve();
+        return { runId: "run-resumed" };
+      });
+      const recovery = scheduleRestartAbortedMainSessionRecovery({
+        getConfig: () => ({}),
+        delayMs: 0,
+        stateDir: tmpDir,
+        startupCheckedStorePaths,
+        gatewayRuntime,
+      });
+      try {
+        if (action === "healthy") {
+          await withinTest(completed.promise, signal);
+          expect(callGateway).toHaveBeenCalledOnce();
+          return;
+        }
+        await withinTest(Promise.race([paused.promise, dispatched.promise]), signal);
+        expect(callGateway).not.toHaveBeenCalled();
+        expect(loadSessionEntry(target)).toEqual(before);
+        expect(
+          info.mock.calls.filter(([line]) => line.includes("restart recovery paused until")),
+        ).toEqual([[expect.stringContaining(new Date(now + 10_001).toISOString())]]);
+        expect(notice).not.toHaveBeenCalled();
+        if (action === "resume") {
+          await expect(
+            retryRestartAbortedMainSessionRecovery({
+              ...target,
+              expectedSessionId: "main-session",
+              stateDir: tmpDir,
+              gatewayRuntime,
+            }),
+          ).resolves.toEqual({ started: 0, settled: 0, failed: 0, skipped: 0 });
+          expect(loadSessionEntry(target)).toEqual(before);
+        }
+        if (action === "stop") {
+          await recovery.stop();
+        }
+        if (action === "replace") {
+          rotateAgentEventLifecycleGeneration();
+        }
+        const extendedPause = createDeferred();
+        if (action === "crash") {
+          const boot = recordGatewayBootStart(env, now);
+          completeGatewayBootLifecycle(boot, { outcome: "startup_failed" }, env, now);
+          info.mockImplementation((message) => {
+            if (message.includes("restart recovery paused until")) {
+              extendedPause.resolve();
+            }
+          });
+        }
+        await vi.advanceTimersByTimeAsync(10_002);
+        if (action === "resume") {
+          await withinTest(completed.promise, signal);
+          expect(callGateway).toHaveBeenCalledOnce();
+          expect(loadSessionEntry(target)?.abortedLastRun).toBe(false);
+          await vi.advanceTimersByTimeAsync(20_000);
+          expect(callGateway).toHaveBeenCalledOnce();
+        } else {
+          if (action === "crash") {
+            await withinTest(extendedPause.promise, signal);
+          }
+          expect(callGateway).not.toHaveBeenCalled();
+          expect(loadSessionEntry(target)).toEqual(before);
+        }
+      } finally {
+        dispatchSettlement.resolve();
+        await recovery.stop();
+        info.mockRestore();
+        notice.mockRestore();
+        warn.mockRestore();
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it("skips a recovery target replaced while its admission waits", async () => {
     const { storePath, sessionKey } = await makeMainSessionFixture();

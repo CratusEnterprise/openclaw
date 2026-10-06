@@ -51,6 +51,7 @@ export type GatewayRecoveryTypingParams = {
 };
 
 export type GatewayRecoveryRuntime = {
+  prepareRestartRecovery: () => Promise<void>;
   dispatchSessionMethod: <T = unknown>(
     method: GatewayRecoverySessionMethod,
     params: unknown,

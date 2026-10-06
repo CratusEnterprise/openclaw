@@ -61,6 +61,7 @@ export async function startTranscriptReloadFixtureSidecars(
       deps: {},
       startChannels: async () => {},
       recoveryRuntime: {
+        prepareRestartRecovery: unusedRecovery,
         dispatchSessionMethod: unusedRecovery,
         dispatchAgent: unusedRecovery,
         waitForAgent: unusedRecovery,

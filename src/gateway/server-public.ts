@@ -112,7 +112,7 @@ export type GatewayServerOptions = {
   updateCanary?: boolean;
   channelAutostartSuppression?: ChannelAutostartSuppression;
   /** Internal lifecycle callback that re-proves and records crash-loop recovery. */
-  tryRecoverChannelAutostartSuppression?: () => boolean;
+  tryRecoverChannelAutostartSuppression?: () => Promise<boolean>;
   ambientEnvTriggers?: AmbientEnvTriggerPolicy;
   /** Internal Node process-origin timestamp used only for initial startup tracing. */
   processStartedAt?: number;
