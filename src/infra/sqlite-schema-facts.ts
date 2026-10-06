@@ -33,6 +33,8 @@ type SchemaOwner = {
   readDataVersion?: number;
   mutationRevision: number;
   mutationDepth: number;
+  transactionOpen: boolean;
+  readRevision?: SqliteReadScopeRevision;
   transactionalSchema: boolean;
   transactionalFacts: boolean;
   snapshot?: object;
@@ -63,6 +65,18 @@ const owners = resolveGlobalSingleton(
 function invalidate(owner: SchemaOwner): void {
   owner.revision += 1;
   owner.facts = undefined;
+}
+
+function observeTransactionState(database: DatabaseSync, owner: SchemaOwner): void {
+  const inTransaction = database.isTransaction;
+  if (owner.transactionOpen !== inTransaction) {
+    owner.readDataVersion = undefined;
+    if (owner.transactionOpen) {
+      // A read error can roll back SQLite without passing through a tracked write.
+      owner.mutationRevision += 1;
+    }
+    owner.transactionOpen = inTransaction;
+  }
 }
 
 function bindScope(database: DatabaseSync, owner: SchemaOwner): SchemaScope {
@@ -135,13 +149,19 @@ function changesData(sql: string): boolean {
 const transactionControlPrefix =
   /^(?:\s|;|--[^\n]*(?:\n|$)|\/\*(?:[^*]|\*(?!\/))*\*\/)*(BEGIN|SAVEPOINT|COMMIT|END|RELEASE|ROLLBACK)\b/i;
 
-function batchTransactionControl(sql: string): string | undefined {
+type SqliteTransactionControl = { kind: string; single: boolean };
+
+function batchTransactionControl(sql: string): SqliteTransactionControl | undefined {
   let control: string | undefined;
+  let statements = 0;
   let remaining = sql;
   while (remaining) {
+    if (remaining.trim()) {
+      statements += 1;
+    }
     const next = transactionControlPrefix.exec(remaining)?.[1]?.toUpperCase();
     if (next === "ROLLBACK") {
-      return next;
+      control = next;
     }
     control ||= next;
     // Exec accepts batches; quoted semicolons and comments do not start statements.
@@ -151,7 +171,18 @@ function batchTransactionControl(sql: string): string | undefined {
     }
     remaining = remaining.slice(end + 1);
   }
-  return control;
+  return control ? { kind: control, single: statements === 1 } : undefined;
+}
+
+function canPreserveTransactionSnapshot(
+  control: SqliteTransactionControl | undefined,
+  inTransaction: boolean,
+): boolean {
+  return Boolean(
+    inTransaction &&
+    control?.single &&
+    (control.kind === "SAVEPOINT" || control.kind === "RELEASE" || control.kind === "ROLLBACK"),
+  );
 }
 
 function callStatement<Result>(
@@ -190,29 +221,54 @@ function trackSchemaChanges(
       owner.transactionalFacts = false;
     }
   };
+  const finishReadScope = (wasTransaction: boolean, expiresRead: boolean, succeeded: boolean) => {
+    const inTransaction = database.isTransaction;
+    if (expiresRead || wasTransaction !== inTransaction) {
+      owner.readDataVersion = undefined;
+    }
+    if (!succeeded && wasTransaction && !inTransaction) {
+      owner.mutationRevision += 1;
+    }
+    owner.transactionOpen = inTransaction;
+  };
   const execute = <T>(
     operation: () => T,
     schemaChange: boolean,
-    control: string | undefined,
+    control: SqliteTransactionControl | undefined,
     dataChange: boolean,
   ): T => {
+    observeTransactionState(database, owner);
     if (owner.transactionalSchema && !owner.scope) {
       bindScope(database, owner);
     }
     // An implicit rollback may be followed by BEGIN before the next schema read.
     settle();
-    const invalidates = schemaChange || (control === "ROLLBACK" && owner.transactionalSchema);
+    const wasTransaction = database.isTransaction;
+    const expiresRead =
+      Boolean(control) && !canPreserveTransactionSnapshot(control, wasTransaction);
+    const invalidates = schemaChange || (control?.kind === "ROLLBACK" && owner.transactionalSchema);
     if (invalidates) {
       invalidateSqliteSchemaFacts(database);
     }
-    if (dataChange) {
+    if (dataChange || control?.kind === "ROLLBACK") {
+      // Savepoint rollback can restore row values without another data mutation.
       owner.mutationRevision += 1;
+    }
+    if (expiresRead) {
+      owner.readDataVersion = undefined;
+    }
+    // Native callbacks in a control batch can cross several SQLite snapshots.
+    const changesReadScope = schemaChange || dataChange || control !== undefined;
+    if (changesReadScope) {
       owner.mutationDepth += 1;
     }
+    let succeeded = false;
     try {
-      return operation();
+      const result = operation();
+      succeeded = true;
+      return result;
     } finally {
-      if (dataChange) {
+      if (changesReadScope) {
         owner.mutationDepth -= 1;
       }
       // A failed batch can already have changed schema; rollback can reuse SQLite's cookie.
@@ -220,6 +276,8 @@ function trackSchemaChanges(
         invalidateSqliteSchemaFacts(database);
       }
       settle(Boolean(control));
+      // Batches can probe an intermediate snapshot; implicit rollback also ends admission.
+      finishReadScope(wasTransaction, expiresRead, succeeded);
     }
   };
   // Keep native prototype instrumentation visible after a connection or statement is retained.
@@ -234,7 +292,8 @@ function trackSchemaChanges(
     const [sql] = prepareArgs;
     const statement = native.DatabaseSync.prototype.prepare.call(database, ...prepareArgs);
     const schemaChange = changesSchema(sql);
-    const control = transactionControlPrefix.exec(sql)?.[1]?.toUpperCase();
+    const controlKind = transactionControlPrefix.exec(sql)?.[1]?.toUpperCase();
+    const control = controlKind ? { kind: controlKind, single: true } : undefined;
     const dataChange = changesData(sql);
     if (schemaChange || control || dataChange) {
       const run = Object.hasOwn(statement, "run") ? statement.run.bind(statement) : undefined;
@@ -265,18 +324,30 @@ function trackSchemaChanges(
           dataChange,
         );
       statement.iterate = function* (...bindings) {
+        observeTransactionState(database, owner);
         if (owner.transactionalSchema && !owner.scope) {
           bindScope(database, owner);
         }
         settle();
-        const invalidates = schemaChange || (control === "ROLLBACK" && owner.transactionalSchema);
+        const wasTransaction = database.isTransaction;
+        const expiresRead =
+          Boolean(control) && !canPreserveTransactionSnapshot(control, wasTransaction);
+        const invalidates =
+          schemaChange || (control?.kind === "ROLLBACK" && owner.transactionalSchema);
         if (invalidates) {
           invalidateSqliteSchemaFacts(database);
         }
-        if (dataChange) {
+        if (dataChange || control?.kind === "ROLLBACK") {
           owner.mutationRevision += 1;
+        }
+        if (expiresRead) {
+          owner.readDataVersion = undefined;
+        }
+        const changesReadScope = schemaChange || dataChange || control !== undefined;
+        if (changesReadScope) {
           owner.mutationDepth += 1;
         }
+        let succeeded = false;
         try {
           const rows = callStatement(
             iterate ?? native.StatementSync.prototype.iterate.bind(statement),
@@ -284,6 +355,7 @@ function trackSchemaChanges(
           );
           try {
             yield* rows;
+            succeeded = true;
           } catch (error) {
             // Delegation does not close the native iterator when next() throws.
             try {
@@ -294,13 +366,14 @@ function trackSchemaChanges(
             throw error;
           }
         } finally {
-          if (dataChange) {
+          if (changesReadScope) {
             owner.mutationDepth -= 1;
           }
           if (invalidates) {
             invalidateSqliteSchemaFacts(database);
           }
           settle(Boolean(control));
+          finishReadScope(wasTransaction, expiresRead, succeeded);
         }
         return undefined;
       };
@@ -319,6 +392,7 @@ function trackSchemaChanges(
     owner.dataVersion = undefined;
     owner.observedDataVersion = undefined;
     owner.readDataVersion = undefined;
+    owner.readRevision = undefined;
     // Native close can still fail; transaction settlement retains pending DDL publication.
     if (owner.scope) {
       scopes.finalizer.unregister(owner);
@@ -335,6 +409,12 @@ export type SqliteReadOperationRevision = {
   mutationRevision: number;
 };
 
+export type SqliteReadScopeRevision = Readonly<
+  SqliteReadOperationRevision & {
+    snapshot: object | undefined;
+  }
+>;
+
 /** Local mutation witness only; foreign writers still require their owning admission fence. */
 export function readSqliteNativeMutationRevision(database: DatabaseSync): number | undefined {
   return owners.get(database)?.mutationRevision;
@@ -344,7 +424,20 @@ export function readSqliteNativeMutationRevision(database: DatabaseSync): number
 export function getSqliteReadOperationRevision(
   database: DatabaseSync,
 ): SqliteReadOperationRevision | undefined {
+  if (database.isTransaction || getSqlitePinnedReadSnapshot(database)) {
+    return undefined;
+  }
+  return getSqliteReadScopeRevision(database);
+}
+
+/** Stable identity for row facts in the admitted operation's current SQLite snapshot. */
+export function getSqliteReadScopeRevision(
+  database: DatabaseSync,
+): SqliteReadScopeRevision | undefined {
   const owner = owners.get(database);
+  if (owner) {
+    observeTransactionState(database, owner);
+  }
   if (
     !owner?.admitted ||
     !owner.facts ||
@@ -352,17 +445,26 @@ export function getSqliteReadOperationRevision(
     owner.readDepth === 0 ||
     owner.readDataVersion === undefined ||
     owner.readDataVersion !== owner.observedDataVersion ||
-    owner.mutationDepth !== 0 ||
-    database.isTransaction ||
-    getSqlitePinnedReadSnapshot(database)
+    owner.mutationDepth !== 0
   ) {
     return undefined;
   }
-  return {
+  const snapshot = getSqlitePinnedReadSnapshot(database);
+  const previous = owner.readRevision;
+  if (
+    previous?.schema === owner.facts &&
+    previous.dataVersion === owner.readDataVersion &&
+    previous.mutationRevision === owner.mutationRevision &&
+    previous.snapshot === snapshot
+  ) {
+    return previous;
+  }
+  return (owner.readRevision = {
     schema: owner.facts,
     dataVersion: owner.readDataVersion,
     mutationRevision: owner.mutationRevision,
-  };
+    snapshot,
+  });
 }
 
 /** Share freshness only within this synchronous call stack, never across an await. */
@@ -372,12 +474,15 @@ export function runSqliteReadOperationSync<T>(
   mode: "cached" | "fresh" = "cached",
 ): T {
   const owner = owners.get(database);
-  if (!owner?.admitted || owner.authorizerActive) {
+  if (!owner || owner.authorizerActive) {
     return operation();
   }
   owner.readDepth += 1;
   try {
-    owner.readDataVersion = readSqliteCacheDataVersion(database, mode);
+    // First admission publishes its probe into this scope before validation consumes it.
+    if (owner.admitted) {
+      owner.readDataVersion = readSqliteCacheDataVersion(database, mode);
+    }
     return operation();
   } finally {
     owner.readDepth -= 1;
@@ -417,6 +522,9 @@ export function readSqliteCacheDataVersion(
   mode: "cached" | "fresh" = "cached",
 ): number {
   const tracked = owners.get(database);
+  if (tracked) {
+    observeTransactionState(database, tracked);
+  }
   const owner = tracked?.admitted ? tracked : undefined;
   if (
     mode === "cached" &&
@@ -453,6 +561,7 @@ export function trackSqliteSchema(database: DatabaseSync, native: NativeSqlite):
       readDepth: 0,
       mutationRevision: 0,
       mutationDepth: 0,
+      transactionOpen: database.isTransaction,
       transactionalSchema: false,
       transactionalFacts: false,
       authorizerActive: false,
