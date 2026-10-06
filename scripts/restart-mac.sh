@@ -1,4 +1,6 @@
 #!/bin/bash
+# Reset OpenClaw like Trimmy: kill running instances, rebuild, repackage, relaunch, verify.
+
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -32,6 +34,7 @@ STAGED_APP_BUNDLE="${STAGED_APP_DIR}/OpenClaw.app"
 log()  { printf '%s\n' "$*"; }
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
+# Ensure local node binaries (rolldown, pnpm) are discoverable for the steps below.
 export PATH="${ROOT_DIR}/node_modules/.bin:${PATH}"
 
 run_step() {
@@ -372,6 +375,7 @@ else
   log "==> Keeping existing OpenClaw instances running while the replacement builds"
 fi
 
+# Bundle Gateway-hosted plugin assets.
 run_step "bundle plugin assets" /bin/bash -c "cd '${ROOT_DIR}' && pnpm plugins:assets:build"
 
 if [ "$AUTO_DETECT_SIGNING" -eq 1 ]; then
@@ -425,6 +429,7 @@ choose_app_bundle() {
   fail "App bundle not found. Set OPENCLAW_APP_BUNDLE to your installed OpenClaw.app"
 }
 
+# When signed, clear any previous launchagent override marker.
 if [[ "$NO_SIGN" -ne 1 && "$ATTACH_ONLY" -ne 1 && -f "${LAUNCHAGENT_DISABLE_MARKER}" ]]; then
   run_step "clear launchagent disable marker" /bin/rm -f "${LAUNCHAGENT_DISABLE_MARKER}"
 fi
@@ -498,6 +503,7 @@ LAUNCH_ENV=(
 )
 run_step "launch app" env -i "${LAUNCH_ENV[@]}" /usr/bin/open "${OPEN_ARGS[@]}"
 
+# 5) Verify the app is alive.
 sleep 1.5
 if [[ -n "$(process_pids_matching "${APP_BUNDLE}/${APP_EXECUTABLE_RELATIVE_PATH}")" ]]; then
   log "OK: OpenClaw is running."
