@@ -37,7 +37,7 @@ export function createDiagnosticsEventHandler(params: {
       switch (evt.type) {
         case "diagnostic.child_process.spawn":
         case "worker.request":
-          // Child-launch counts and worker request metrics currently export through Prometheus.
+          // Child launch and worker request metrics currently export through Prometheus.
           return;
         case "diagnostic.gc":
           return recorders.recordGcDuration(evt, metadata);
