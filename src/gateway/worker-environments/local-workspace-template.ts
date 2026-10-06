@@ -61,6 +61,7 @@ async function validateTemplate(
       const result = await git.run(
         directory,
         [
+          "--no-optional-locks",
           "status",
           "--porcelain=v2",
           "--branch",
