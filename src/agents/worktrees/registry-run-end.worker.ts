@@ -20,7 +20,10 @@ import {
   WorktreeRemovalContentionError,
   WorktreeRemovalLockError,
 } from "./errors.js";
-import { publishPendingWorktreeInDatabase } from "./pending-slots.worker.js";
+import {
+  publishPendingWorktreeInDatabase,
+  recoverPendingWorktreesInDatabase,
+} from "./pending-slots.worker.js";
 import {
   findLiveRegistryWorktreeByOwnerInDatabase,
   getRegistryWorktreeInDatabase,
@@ -350,6 +353,11 @@ export function worktreeRunEndMutation<Input>(
     );
   };
 }
+
+export const recoverPendingWorktreesInWorker = worktreeRunEndMutation(
+  "worktrees.recoverPending",
+  recoverPendingWorktreesInDatabase,
+);
 
 export type WorktreeRemovalRowInput = {
   worktreeId: string;

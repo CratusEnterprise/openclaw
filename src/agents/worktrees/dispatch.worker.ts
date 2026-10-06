@@ -6,7 +6,6 @@ import {
   readPendingWorktreesInDatabase,
   reservePendingWorktreeInDatabase,
   releasePendingWorktreeInDatabase,
-  recoverPendingWorktreesInDatabase,
   readWorktreeSlotCountInDatabase,
 } from "./pending-slots.worker.js";
 import { writeProvisionedSnapshotInDatabase } from "./provisioned-snapshot.worker.js";
@@ -53,10 +52,6 @@ export const worktreeOperations = {
   "worktrees.releasePending": worktreeRunEndMutation(
     "worktrees.releasePending",
     releasePendingWorktreeInDatabase,
-  ),
-  "worktrees.recoverPending": worktreeRunEndMutation(
-    "worktrees.recoverPending",
-    recoverPendingWorktreesInDatabase,
   ),
   "worktrees.insert": worktreeRunEndMutation("worktrees.insert", insertRegistryWorktreeInDatabase),
   "worktrees.update": worktreeRunEndMutation("worktrees.update", updateRegistryWorktreeInDatabase),

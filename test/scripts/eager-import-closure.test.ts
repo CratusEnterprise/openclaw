@@ -83,6 +83,7 @@ it("acquires wrapper leases and manages templates without the application comman
   copyPrWrapperSources(root);
   linkPrWrapperDependencies(root);
   await prepareCopiedSourceModules(root, [
+    "src/agents/worktrees/allocation.ts",
     "src/agents/worktrees/template-registry-async.ts",
     "src/state/openclaw-state-lease.ts",
     "src/state/openclaw-state-db.ts",
@@ -101,6 +102,7 @@ it("acquires wrapper leases and manages templates without the application comman
       "-e",
       `
         import assert from "node:assert/strict";
+        import { withWorktreeAllocationLease } from "./src/agents/worktrees/allocation.js";
         import {
           deleteTemplateAsync, hasTemplatesAsync, listTemplatesAsync,
           markTemplateReadyAsync, readTemplateAsync, reserveTemplateAsync,
@@ -120,8 +122,7 @@ it("acquires wrapper leases and manages templates without the application comman
         for (let grant = 0; grant < 2; grant += 1) {
           await withOpenClawStateLease(options, async (lease) => lease.assertOwned());
         }
-        await withOpenClawStateLease(options, async (lease) => {
-          const guard = () => lease.assertOwned();
+        await withWorktreeAllocationLease({ env: process.env }, async ({ commitGuard: guard }) => {
           const template = {
             cacheKey: "wrapper-template", id: "generation-1",
             repoRoot: process.cwd(), commonDir: process.cwd() + "/.git",
