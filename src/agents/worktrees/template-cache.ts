@@ -172,7 +172,7 @@ export type PreparedWorktreeTemplate = WorktreeTemplateRecord & {
 export async function prepareWorktreeTemplate(params: {
   env: NodeJS.ProcessEnv;
   now: () => number;
-  options: WorktreeFilesystemOptions & { waitUntil?: number };
+  options: WorktreeFilesystemOptions & Pick<WorktreeAllocationGuard, "waitBudget">;
   cacheKey: string;
   contentKey: string;
   repoRoot: string;

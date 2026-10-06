@@ -8,6 +8,7 @@ import {
   withinTest,
 } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import * as backoff from "../../infra/backoff.js";
 import * as gitExec from "../../infra/git-exec.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import { SqliteWorkerError } from "../../infra/sqlite-worker-contract.js";
@@ -18,9 +19,11 @@ import {
   runOpenClawStateWriteTransaction,
 } from "../../state/openclaw-state-db.js";
 import * as stateLease from "../../state/openclaw-state-lease.js";
-import * as allocation from "./allocation.js";
 import { WORKTREE_CREATE_LEASE_SCOPE, WORKTREE_MUTATION_LEASE_SCOPE } from "./capacity-contract.js";
-import { WorktreeCapacityContentionError } from "./capacity.js";
+import {
+  WorktreeCapacityContentionError,
+  WORKTREE_CAPACITY_RESERVATION_SCOPE,
+} from "./capacity.js";
 import { requireGit } from "./git.js";
 import { readPendingWorktrees } from "./pending-slots.js";
 import * as registry from "./registry.js";
@@ -81,6 +84,24 @@ describe("managed worktree pending slots", () => {
     return waiting.promise;
   }
 
+  async function holdLease(scope: string, key: string) {
+    const entered = createDeferred();
+    const release = createDeferred();
+    const holder = stateLease.withOpenClawStateLeaseAsync(
+      { scope, key, leaseMs: 60_000, waitMs: 0 },
+      captureWorktreeRunEndContext(env),
+      async () => {
+        entered.resolve();
+        await release.promise;
+      },
+    );
+    await awaitGateBeforeSettlement(entered.promise, holder, "Holder did not acquire its lease");
+    return async () => {
+      release.resolve();
+      await holder;
+    };
+  }
+
   function markPendingOwnerDead(record: ManagedWorktreeRecord) {
     runOpenClawStateWriteTransaction(
       ({ db }) => {
@@ -104,19 +125,66 @@ describe("managed worktree pending slots", () => {
   }
 
   it("keeps one contention budget when creation retries after another holder settles", async () => {
-    const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+    const releaseFirst = await holdLease(WORKTREE_CAPACITY_RESERVATION_SCOPE, "first");
+    const releaseSecond = await holdLease(WORKTREE_CAPACITY_RESERVATION_SCOPE, "second");
+    let clock = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => clock);
     const run = vi
       .fn()
-      .mockRejectedValueOnce(new WorktreeCapacityContentionError("disk reserved", "previous"))
-      .mockRejectedValue(new Error("creation reentered after its budget"));
-    vi.spyOn(allocation, "waitForWorktreeCapacity").mockImplementationOnce(async () => {
-      clock.mockReturnValue(30 * 60_000 + 1);
-    });
-    await expect(createWithWorktreeAllocation({ env }, run, async () => {})).rejects.toThrow(
-      /timed out.*openclaw worktrees gc/,
-    );
-    expect(run).toHaveBeenCalledTimes(1);
+      .mockRejectedValueOnce(new WorktreeCapacityContentionError("disk reserved", "first"))
+      .mockRejectedValue(new WorktreeCapacityContentionError("disk reserved", "second"));
+    vi.spyOn(backoff, "sleepWithAbort")
+      .mockImplementationOnce(async () => {
+        clock += 29 * 60_000;
+        await releaseFirst();
+      })
+      .mockImplementationOnce(async () => {
+        clock += 60_001;
+      });
+    try {
+      await expect(createWithWorktreeAllocation({ env }, run, async () => {})).rejects.toThrow(
+        /timed out.*openclaw worktrees gc/,
+      );
+      expect(run).toHaveBeenCalledTimes(2);
+    } finally {
+      await releaseFirst();
+      await releaseSecond();
+    }
   });
+
+  it.each([29, 30])(
+    "publishes after %i minutes of contention and two minutes of preparation",
+    async (admissionMinutes) => {
+      const release = await holdLease(WORKTREE_CREATE_LEASE_SCOPE, "capacity");
+      let clock = 0;
+      vi.spyOn(performance, "now").mockImplementation(() => clock);
+      vi.spyOn(backoff, "sleepWithAbort").mockImplementationOnce(async () => {
+        clock += admissionMinutes * 60_000;
+        await release();
+      });
+      const execute = gitExec.executeGitCommand;
+      vi.spyOn(gitExec, "executeGitCommand").mockImplementation(async (cwd, args, options) => {
+        const result = await execute(cwd, args, options);
+        if (args[0] === "read-tree" && args.includes("-u")) {
+          clock += 2 * 60_000;
+        }
+        return result;
+      });
+      try {
+        const created = await service.create({
+          repoRoot,
+          name: "slow-preparation",
+          baseRef: "HEAD",
+        });
+        expect(clock).toBe((admissionMinutes + 2) * 60_000);
+        expect(await service.listRegistryRecords()).toEqual([created]);
+        expect(await readPendingWorktrees(env)).toEqual([]);
+        expect(await fs.readFile(path.join(created.path, "README.md"), "utf8")).toBe("base\n");
+      } finally {
+        await release();
+      }
+    },
+  );
 
   it("overlaps materialization after releasing the allocation lease", async ({ signal }) => {
     const held = holdMaterialization();

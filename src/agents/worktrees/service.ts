@@ -599,7 +599,11 @@ export class ManagedWorktreeService {
             await cleanup();
           }
         } catch (cleanupError) {
-          failures.push(cleanupError);
+          failures.push(
+            new Error(`failed to clean up worktree creation: ${String(cleanupError)}`, {
+              cause: cleanupError,
+            }),
+          );
         }
       }
       if (failures.length > 1) {
@@ -685,7 +689,7 @@ export class ManagedWorktreeService {
       return await addManagedWorktree({
         env: this.env,
         now: this.now,
-        waitUntil: params.waitUntil,
+        waitBudget: params.waitBudget,
         enabled: this.getConfig?.().worktreeAcceleration !== false,
         repoRoot: repository.repoRoot,
         commonDir: repository.commonDir,

@@ -89,7 +89,7 @@ export async function createWithWorktreeAllocation(
 ): Promise<ManagedWorktreeCreationOutcome> {
   const params = {
     ...input,
-    waitUntil: performance.now() + WORKTREE_CREATE_LEASE_WAIT_MS,
+    waitBudget: { remainingMs: WORKTREE_CREATE_LEASE_WAIT_MS },
   };
   for (;;) {
     const publication: WorktreeCreationPublication = { id: randomUUID() };
@@ -181,11 +181,11 @@ export async function createWithWorktreeAllocation(
         await withWorktreeMutationLease({ ...params, id: error.worktreeId }, async () => {});
         // The creator can die during the wait. Release checkout custody before allocation recovery.
         await withWorktreeAllocationLease(params, async () => {
-          if (
-            (await readPendingWorktrees(params.env)).some(
-              ({ record, state }) => record.id === error.worktreeId && state === "pending",
-            )
-          ) {
+          const pending = (await readPendingWorktrees(params.env)).find(
+            ({ record, state }) => record.id === error.worktreeId && state === "pending",
+          );
+          if (pending) {
+            await requireNewWorktreeBranch(pending.record.repoRoot, pending.record.branch);
             throw new Error(
               "Worktree creation did not settle; run openclaw worktrees gc to recover its pending slot",
               { cause: error },
@@ -435,19 +435,7 @@ async function resolveWorktreeName(
   suppliedName?: string,
 ): Promise<string> {
   if (suppliedName !== undefined) {
-    const branch = `openclaw/${suppliedName}`;
-    const existing = await runGit(repoRoot, [
-      "show-ref",
-      "--quiet",
-      "--verify",
-      `refs/heads/${branch}`,
-    ]);
-    if (existing.code === 0) {
-      throw new Error(`branch already exists: ${branch}`);
-    }
-    if (existing.code !== 1) {
-      throw commandError("git show-ref --verify", existing);
-    }
+    await requireNewWorktreeBranch(repoRoot, `openclaw/${suppliedName}`);
     return suppliedName;
   }
   validateName(suggestedName);
@@ -458,6 +446,21 @@ async function resolveWorktreeName(
     }
   }
   throw new Error(`no available worktree name for ${suggestedName}`);
+}
+
+async function requireNewWorktreeBranch(repoRoot: string, branch: string): Promise<void> {
+  const existing = await runGit(repoRoot, [
+    "show-ref",
+    "--quiet",
+    "--verify",
+    `refs/heads/${branch}`,
+  ]);
+  if (existing.code === 0) {
+    throw new Error(`branch already exists: ${branch}`);
+  }
+  if (existing.code !== 1) {
+    throw commandError("git show-ref --verify", existing);
+  }
 }
 
 export type ResolvedRepository = {

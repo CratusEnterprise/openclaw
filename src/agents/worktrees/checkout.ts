@@ -5,6 +5,7 @@ import { root as fsRoot } from "../../infra/fs-safe.js";
 import { normalizeGitPathForFilesystem, type GitCommandOptions } from "../../infra/git-exec.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { OpenClawStateLeaseError } from "../../state/openclaw-state-lease-error.js";
+import type { WorktreeWaitBudget } from "./allocation.js";
 import { withWorktreeGitConfig } from "./checkout-git-config.js";
 import type { WorktreeSourceProfile } from "./checkout-profiles.js";
 import { hasWorktreeUnknownOutcome } from "./errors.js";
@@ -25,7 +26,7 @@ import { prepareWorktreeTemplate } from "./template-cache.js";
 const log = createSubsystemLogger("agents/worktrees");
 
 type CheckoutOptions = WorktreeFilesystemOptions & {
-  waitUntil?: number;
+  waitBudget?: WorktreeWaitBudget;
   env: NodeJS.ProcessEnv;
   now: () => number;
   enabled: boolean;

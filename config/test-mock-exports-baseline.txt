@@ -9830,7 +9830,6 @@
 ["src/projects/project-registry.authority.test.ts","../state/openclaw-state-db-readonly.js","985769830b192104474f100995df08c7f4af290b2c483b302238513d65dd7109",1]
 ["src/projects/project-registry.authority.test.ts","../state/openclaw-state-db.js","8244758a594a5d28976843f2f8d7826996bd6aad747af97f1ee3c2360671ae8f",1]
 ["src/projects/project-registry.authority.test.ts","../state/openclaw-state-lease-heartbeat.js","266c93228ff0345ac764fadbef41c64f4ac8623f28cbd62838e8b5ad4af22795",1]
-["src/projects/project-registry.authority.test.ts","../state/openclaw-state-worker-store.js","1a06470102eba0b8e09bd31b61aa9bf0abfe25bb0ea7c062aa4fe411a0bd99f0",1]
 ["src/projects/project-registry.authority.test.ts","./project-clone-runtime.js","30bad5d87e1f7c0a12bbeab7df76ee2ac6110ab8017aa633c66ddb0329ea9715",1]
 ["src/projects/project-registry.authority.test.ts","./project-registry.kernel.js","63ec735f46b2aa248d3b87369d69a6004d57330d7b179818a605fe32738904df",1]
 ["src/projects/project-source-env.test.ts","../agents/agent-scope-config.js","661edc85261266483fc0f4051f3277cd5265028d97ee6eb6cbd4a0f8754111aa",1]
