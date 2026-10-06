@@ -19,6 +19,8 @@ export type SqliteSchemaFacts = {
   readonly schemaVersion: number;
   readonly tables: ReadonlySet<string>;
   readonly tableSql: ReadonlyMap<string, string | null>;
+  readonly indexes: ReadonlySet<string>;
+  readonly triggers: ReadonlyMap<string, { table: string; sql: string | null }>;
 };
 
 type SchemaOwner = {
@@ -505,12 +507,13 @@ export function getAdmittedSqliteSchemaFacts(
       const userVersion = executeWithCachedStatement(database, "PRAGMA user_version", [], (s) =>
         s.get(),
       );
-      const tables = executeWithCachedStatement(
+      const objects = executeWithCachedStatement(
         database,
-        "SELECT name, sql FROM main.sqlite_schema WHERE type = 'table'",
+        "SELECT type, name, tbl_name, sql FROM main.sqlite_schema WHERE type IN ('table', 'index', 'trigger')",
         [],
         (s) => s.all(),
       );
+      const tables = objects.filter((row) => row.type === "table");
       return {
         revision: owner.revision,
         userVersion: Number(userVersion?.user_version ?? 0),
@@ -520,6 +523,25 @@ export function getAdmittedSqliteSchemaFacts(
           tables.flatMap((row) =>
             typeof row.name === "string"
               ? [[row.name, typeof row.sql === "string" ? row.sql : null] as const]
+              : [],
+          ),
+        ),
+        indexes: new Set(
+          objects.flatMap((row) =>
+            row.type === "index" && typeof row.name === "string" ? [row.name] : [],
+          ),
+        ),
+        triggers: new Map(
+          objects.flatMap((row) =>
+            row.type === "trigger" &&
+            typeof row.name === "string" &&
+            typeof row.tbl_name === "string"
+              ? [
+                  [
+                    row.name,
+                    { table: row.tbl_name, sql: typeof row.sql === "string" ? row.sql : null },
+                  ] as const,
+                ]
               : [],
           ),
         ),
