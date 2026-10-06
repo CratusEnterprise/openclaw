@@ -523,7 +523,7 @@ function createAgentDatabaseExecution(
           }
           return captureGenerationClaim();
         },
-        async prepare(source, signal, options) {
+        async prepare(source, signal, preparationOptions) {
           assertBorrowed();
           assertCreationReference(true);
           const result = run(
@@ -538,7 +538,7 @@ function createAgentDatabaseExecution(
             true,
             creatingTarget,
             signal,
-            options?.readmitSchema,
+            preparationOptions?.readmitSchema,
           );
           pending.add(result);
           void result.finally(() => pending.delete(result)).catch(() => undefined);
