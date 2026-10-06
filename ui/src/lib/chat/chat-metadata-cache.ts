@@ -59,10 +59,18 @@ export type ChatMetadataEntry = {
   queuedRequest?: ChatMetadataRequest;
   writer?: object;
   refreshRevision: number;
+  refreshAfter?: number;
   catalogRevision: number;
   refresh?: ChatMetadataRefreshRecord;
   listeners: Map<(update: ChatMetadataUpdate) => void, () => boolean>;
   release: () => void;
+};
+
+export type ChatMetadataInvalidation = {
+  sessionOnly?: boolean;
+  matchesCatalog?: (scope: ChatMetadataParams) => boolean;
+  commandsChanged?: boolean;
+  delayMs?: number;
 };
 
 export const chatMetadataCache = new WeakMap<
@@ -72,9 +80,7 @@ export const chatMetadataCache = new WeakMap<
     invalidate: (
       scope?: ChatMetadataParams,
       sessionDefaults?: UiSessionDefaultsHost,
-      sessionEvent?: Record<string, unknown> | null,
-      matchesCatalog?: (scope: ChatMetadataParams) => boolean,
-      commandsChanged?: boolean,
+      options?: ChatMetadataInvalidation,
     ) => void;
   }
 >();
@@ -92,9 +98,7 @@ export function invalidateChatMetadataStore(
   } else if (catalogInvalidation === "refresh") {
     invalidateModelCatalogCache(client, scope, sessionDefaults);
   }
-  chatMetadataCache
-    .get(client)
-    ?.invalidate(scope, sessionDefaults, undefined, undefined, commandsChanged);
+  chatMetadataCache.get(client)?.invalidate(scope, sessionDefaults, { commandsChanged });
 }
 
 export function invalidateChatMetadataForSessionEvent(
@@ -144,5 +148,16 @@ export function invalidateChatMetadataForSessionEvent(
   ) {
     return;
   }
-  chatMetadataCache.get(client)?.invalidate(scope, sessionDefaults, source, matchesCatalog);
+  const delayMs =
+    !sessionModelRevision &&
+    source?.catalogChanged !== true &&
+    source?.phase !== "reset" &&
+    (source?.reason === "patch" || source?.reason === "command-metadata")
+      ? 2_500
+      : 0;
+  chatMetadataCache.get(client)?.invalidate(scope, sessionDefaults, {
+    sessionOnly: true,
+    matchesCatalog,
+    delayMs,
+  });
 }

@@ -62,7 +62,6 @@ describe("automatic metadata admission", () => {
       expect(request).not.toHaveBeenCalled();
       sessionModelRevision = "selection-2";
       publish(sessionModelRevision);
-      await vi.advanceTimersByTimeAsync(2_500);
       await Promise.all(refreshes.map((refresh) => refresh.completed));
       expect(request.mock.calls.map(([method]) => method)).toEqual(["models.list"]);
       publish(sessionModelRevision);
@@ -98,6 +97,48 @@ describe("automatic metadata admission", () => {
       await automatic.completed;
     }
   });
+
+  it.each(["patch", "command-metadata"])(
+    "coalesces unrevisioned %s bursts and admits explicit catalog changes",
+    async (reason) => {
+      vi.useFakeTimers();
+      const request = vi.fn(async (method: string) =>
+        method === "chat.metadata" ? commands : { models },
+      );
+      const client = createTestGatewayClient(request);
+      const refreshes: ReturnType<typeof loadChatMetadataRefresh>[] = [];
+      const release = subscribeChatMetadata(client, scope, (update) => {
+        if (update.type === "invalidated") {
+          refreshes.push(loadChatMetadataRefresh(client, scope));
+        }
+      });
+      try {
+        await loadChatMetadataRefresh(client, scope).completed;
+        request.mockClear();
+        for (let index = 0; index < 5; index++) {
+          invalidateChatMetadataForSessionEvent(client, { ...scope, reason }, {});
+          await vi.advanceTimersByTimeAsync(500);
+        }
+        expect(request).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(2_000);
+        await Promise.all(refreshes.map((refresh) => refresh.completed));
+        expect(request.mock.calls.map(([method]) => method)).toEqual(["models.list"]);
+        request.mockClear();
+        invalidateChatMetadataForSessionEvent(client, { ...scope, reason }, {});
+        expect(request).not.toHaveBeenCalled();
+        invalidateChatMetadataForSessionEvent(
+          client,
+          { ...scope, reason, catalogChanged: true },
+          {},
+        );
+        await Promise.all(refreshes.map((refresh) => refresh.completed));
+        expect(request.mock.calls.map(([method]) => method)).toEqual(["models.list"]);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        release();
+      }
+    },
+  );
 
   it("cancels startup polling after a retired refresh loses its last subscriber", async () => {
     vi.useFakeTimers();
@@ -146,7 +187,11 @@ describe("automatic metadata admission", () => {
       );
       const client = createTestGatewayClient(request);
       const release = subscribeChatMetadata(client, scope, (update) => updates.push(update));
-      invalidateChatMetadataForSessionEvent(client, { ...scope, reason: "patch" }, {});
+      invalidateChatMetadataForSessionEvent(
+        client,
+        { ...scope, reason: "patch", catalogChanged: true },
+        {},
+      );
       const refresh = loadChatMetadataRefresh(client, scope);
       const catalogResult = refresh.catalog.catch((error: unknown) => error);
       try {

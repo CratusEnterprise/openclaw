@@ -19,6 +19,7 @@ import { uiConversationMatches, type UiSessionDefaultsHost } from "../sessions/s
 import {
   chatMetadataCache,
   type ChatMetadataEntry,
+  type ChatMetadataInvalidation,
   type ChatMetadataPublication,
   type ChatMetadataRequest,
   type ChatMetadataRefresh,
@@ -51,16 +52,17 @@ function metadataEntryFor(
     const invalidate = (
       scope?: ChatMetadataParams,
       sessionDefaults?: UiSessionDefaultsHost,
-      sessionEvent?: Record<string, unknown> | null,
-      matchesCatalog?: (scope: ChatMetadataParams) => boolean,
-      commandsChanged = true,
+      {
+        sessionOnly = false,
+        matchesCatalog,
+        commandsChanged = true,
+        delayMs = 0,
+      }: ChatMetadataInvalidation = {},
     ) => {
       const invalidated = Array.from(entries.values()).filter(
         (entry) =>
           (!matchesCatalog || matchesCatalog(entry.scope)) &&
-          (sessionEvent === undefined ||
-            scope !== undefined ||
-            entry.scope.sessionKey !== undefined) &&
+          (!sessionOnly || scope !== undefined || entry.scope.sessionKey !== undefined) &&
           (sessionDefaults && scope?.sessionKey
             ? uiConversationMatches(
                 sessionDefaults,
@@ -74,9 +76,9 @@ function metadataEntryFor(
           (!scope?.authProfileId || entry.scope.authProfileId === scope.authProfileId),
       );
       // Retire every affected writer before subscribers can synchronously start replacements.
-      const sessionOnly = sessionEvent !== undefined;
       for (const entry of invalidated) {
         entry.refreshRevision += 1;
+        entry.refreshAfter = delayMs ? Date.now() + delayMs : undefined;
         if (!sessionOnly && commandsChanged) {
           entry.invalidated = true;
           entry.writer = undefined;
@@ -87,7 +89,7 @@ function metadataEntryFor(
         notifyChatMetadataListeners(entry, {
           type: "invalidated",
           scope: sessionOnly ? "session" : "full",
-          refreshSessionFacts: sessionOnly || (sessionEvent === undefined && !scope?.sessionKey),
+          refreshSessionFacts: sessionOnly || !scope?.sessionKey,
         });
         entry.release();
       }
@@ -356,6 +358,7 @@ export function beginChatMetadataPublication(
 export function retireChatMetadataRefresh(client: GatewayBrowserClient, scope: ChatMetadataParams) {
   const entry = metadataEntryFor(client, scope);
   entry.refreshRevision += 1;
+  entry.refreshAfter = undefined;
   const previous = entry.refresh;
   entry.refresh = undefined;
   // Foreground demand can adopt this catalog read; only scope release cancels it.
@@ -413,6 +416,7 @@ export function loadChatMetadataRefresh(
   const catalog = createDeferredCore<ModelCatalogResult | undefined>();
   const completed = createDeferredCore();
   let wakePending = false;
+  let debounceTimer: ReturnType<typeof setTimeout> | undefined;
   const record: ChatMetadataRefreshRecord = {
     controller: entry.catalogController,
     catalog: catalog.promise,
@@ -430,12 +434,18 @@ export function loadChatMetadataRefresh(
       if (record.phase !== "waiting") {
         return;
       }
+      clearTimeout(debounceTimer);
       peekModelCatalog(client, scope);
       const current = entry.refresh === record;
       const active =
         current &&
         !record.controller.signal.aborted &&
         Array.from(entry.listeners.values()).some((isActive) => isActive());
+      const delay = (entry.refreshAfter ?? 0) - Date.now();
+      if (active && delay > 0) {
+        debounceTimer = setTimeout(record.start, delay);
+        return;
+      }
       if (active && record.metadataRequired && entry.queuedRequest) {
         // Refresh the queued publication without admitting another transport.
         void loadChatMetadata(client, scope);
