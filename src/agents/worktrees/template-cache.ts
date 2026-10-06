@@ -172,7 +172,7 @@ export type PreparedWorktreeTemplate = WorktreeTemplateRecord & {
 export async function prepareWorktreeTemplate(params: {
   env: NodeJS.ProcessEnv;
   now: () => number;
-  options: WorktreeFilesystemOptions;
+  options: WorktreeFilesystemOptions & { waitUntil?: number };
   cacheKey: string;
   contentKey: string;
   repoRoot: string;
@@ -196,6 +196,9 @@ export async function prepareWorktreeTemplate(params: {
         const assertCurrent = options.commitGuard;
         const existing = await readTemplateAsync(params.env, params.cacheKey);
         assertCurrent();
+        const hasReaders = existing
+          ? await hasTemplateReadersAsync(params.env, existing.id, assertCurrent)
+          : false;
         if (
           existing?.status === "ready" &&
           existing.contentKey === params.contentKey &&
@@ -213,10 +216,7 @@ export async function prepareWorktreeTemplate(params: {
           await retained.release();
           retained = undefined;
         }
-        if (
-          params.reuseOnly ||
-          (existing && (await hasTemplateReadersAsync(params.env, existing.id, assertCurrent)))
-        ) {
+        if (params.reuseOnly || hasReaders) {
           return undefined;
         }
         setWorktreePreparationTemplate("cold");

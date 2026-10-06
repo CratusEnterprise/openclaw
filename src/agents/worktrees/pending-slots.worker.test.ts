@@ -7,7 +7,7 @@ import { withWorktreeAllocationLease, withWorktreeMutationLease } from "./alloca
 import {
   readPendingWorktrees,
   readWorktreeSlotCount,
-  recoverPendingWorktree,
+  recoverPendingWorktrees,
   releasePendingWorktree,
   reservePendingWorktree,
 } from "./pending-slots.js";
@@ -42,9 +42,7 @@ it("retains pending custody on refused publication and publishes atomically in t
       );
       await reservePendingWorktree(env, record, guard.workerAuthority);
       expect(await readWorktreeSlotCount(env)).toBe(1);
-      await expect(recoverPendingWorktree(env, record.id, guard.workerAuthority)).rejects.toThrow(
-        "definitely dead process owner",
-      );
+      await recoverPendingWorktrees(env, guard.workerAuthority);
       expect(await readRegistryWorktrees(env)).toEqual([]);
       expect(await readPendingWorktrees(env)).toEqual([{ record, state: "pending" }]);
       await expect(

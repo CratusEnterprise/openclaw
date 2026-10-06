@@ -18,11 +18,14 @@ import {
   runOpenClawStateWriteTransaction,
 } from "../../state/openclaw-state-db.js";
 import * as stateLease from "../../state/openclaw-state-lease.js";
+import * as allocation from "./allocation.js";
 import { WORKTREE_CREATE_LEASE_SCOPE, WORKTREE_MUTATION_LEASE_SCOPE } from "./capacity-contract.js";
+import { WorktreeCapacityContentionError } from "./capacity.js";
 import { requireGit } from "./git.js";
 import { readPendingWorktrees } from "./pending-slots.js";
 import * as registry from "./registry.js";
 import { captureWorktreeRunEndContext } from "./run-end-lifecycle.js";
+import { createWithWorktreeAllocation } from "./service-preparation.js";
 import { ManagedWorktreeService } from "./service.js";
 import { useManagedWorktreeTestRepository } from "./service.test-support.js";
 
@@ -76,6 +79,21 @@ describe("managed worktree pending slots", () => {
     );
     return waiting.promise;
   }
+
+  it("keeps one contention budget when creation retries after another holder settles", async () => {
+    const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+    const run = vi
+      .fn()
+      .mockRejectedValueOnce(new WorktreeCapacityContentionError("disk reserved", "previous"))
+      .mockRejectedValue(new Error("creation reentered after its budget"));
+    vi.spyOn(allocation, "waitForWorktreeCapacity").mockImplementationOnce(async () => {
+      clock.mockReturnValue(30 * 60_000 + 1);
+    });
+    await expect(createWithWorktreeAllocation({ env }, run, async () => {})).rejects.toThrow(
+      /timed out.*openclaw worktrees gc/,
+    );
+    expect(run).toHaveBeenCalledTimes(1);
+  });
 
   it("overlaps materialization after releasing the allocation lease", async ({ signal }) => {
     const held = holdMaterialization();

@@ -1,10 +1,10 @@
 import type { DatabaseSync } from "node:sqlite";
 import { safeParseJsonRecord } from "@openclaw/normalization-core/json-coercion";
 import type { Selectable } from "kysely";
-import { classifyGatewayOwnerProcessNamespace } from "../../infra/gateway-lock-payload.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import {
   parseStateLeaseProcessOwner,
+  readStateLeaseProcessOwnerStatus,
   type StateLeaseProcessOwner,
 } from "../../infra/state-lease-process-owner.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
@@ -204,7 +204,7 @@ export function deleteTemplate(
   });
 }
 
-/** Readers never expire while a native clone can still borrow template bytes. */
+/** Live readers retain custody until their native clone settles. */
 export function retainTemplateReader(
   env: NodeJS.ProcessEnv,
   input: { id: string; key: string; owner: StateLeaseProcessOwner; unpublish?: true },
@@ -277,12 +277,7 @@ export function hasTemplateReaders(
         throw new Error("Worktree template reader is unreadable; template retained");
       }
       const owner = parseStateLeaseProcessOwner(row.payload_json);
-      // A dead parent does not prove its native child stopped. Only an older
-      // boot proves those borrowers are gone without an explicit settlement.
-      if (
-        owner?.processNamespace &&
-        classifyGatewayOwnerProcessNamespace(owner.processNamespace) === "dead"
-      ) {
+      if (readStateLeaseProcessOwnerStatus(owner) === "dead") {
         executeSqliteQuerySync(
           db,
           k

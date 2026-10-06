@@ -20,7 +20,6 @@ const query = (db: DatabaseSync) => getNodeSqliteKysely<Pick<DB, "state_leases" 
 export type PendingWorktreeSlot = {
   record: ManagedWorktreeRecord;
   state: "pending" | "recovering";
-  ownerStatus?: "live" | "dead" | "unknown";
 };
 
 function readSlots(db: DatabaseSync) {
@@ -89,15 +88,8 @@ export function readWorktreeSlotCountInDatabase(db: DatabaseSync): number {
   );
 }
 
-export function readPendingWorktreesInDatabase(
-  db: DatabaseSync,
-  { inspectOwners }: { inspectOwners?: boolean } = {},
-): PendingWorktreeSlot[] {
-  return readSlots(db).map(({ record, state, owner }) =>
-    inspectOwners
-      ? { record, state, ownerStatus: readStateLeaseProcessOwnerStatus(owner) }
-      : { record, state },
-  );
+export function readPendingWorktreesInDatabase(db: DatabaseSync): PendingWorktreeSlot[] {
+  return readSlots(db).map(({ record, state }) => ({ record, state }));
 }
 
 function assertPendingWorktreeMutationLease(
@@ -159,33 +151,34 @@ export function reservePendingWorktreeInDatabase(
   );
 }
 
-export function recoverPendingWorktreeInDatabase(
+export function recoverPendingWorktreesInDatabase(
   db: DatabaseSync,
-  { id }: { id: string },
+  _input: undefined,
   leases: readonly OpenClawStateLeaseIdentity[] = [],
 ): void {
-  assertPendingWorktreeMutationLease(id, leases);
   if (
     !leases.some((lease) => lease.scope === WORKTREE_CREATE_LEASE_SCOPE && lease.key === "capacity")
   ) {
     throw new Error("Pending worktree recovery requires the allocation lease");
   }
-  const slot = readSlots(db).find((candidate) => candidate.record.id === id);
-  if (!slot || readStateLeaseProcessOwnerStatus(slot.owner) !== "dead") {
-    throw new Error("Pending worktree recovery requires a definitely dead process owner");
+  for (const slot of readSlots(db)) {
+    if (slot.state !== "pending" || readStateLeaseProcessOwnerStatus(slot.owner) !== "dead") {
+      continue;
+    }
+    // Reclaim admission only: native children may still write the retained checkout.
+    executeSqliteQuerySync(
+      db,
+      query(db)
+        .updateTable("state_leases")
+        .set({
+          payload_json: JSON.stringify({ ...slot, state: "recovering" }),
+          updated_at: Date.now(),
+        })
+        .where("scope", "=", PENDING_SCOPE)
+        .where("lease_key", "=", slot.record.id)
+        .where("owner", "=", slot.record.id),
+    );
   }
-  executeSqliteQuerySync(
-    db,
-    query(db)
-      .updateTable("state_leases")
-      .set({
-        payload_json: JSON.stringify({ ...slot, state: "recovering" }),
-        updated_at: Date.now(),
-      })
-      .where("scope", "=", PENDING_SCOPE)
-      .where("lease_key", "=", id)
-      .where("owner", "=", id),
-  );
 }
 
 export function releasePendingWorktreeInDatabase(

@@ -13,6 +13,7 @@ import {
   withWorktreeAllocationLease,
   withWorktreeMutationLease,
   waitForWorktreeCapacity,
+  WORKTREE_CREATE_LEASE_WAIT_MS,
   type WorktreeAllocationGuard,
 } from "./allocation.js";
 import { WorktreeCapacityContentionError } from "./capacity.js";
@@ -73,7 +74,7 @@ export async function prepareWorktreeDestination(params: {
 }
 
 export async function createWithWorktreeAllocation(
-  params: Pick<
+  input: Pick<
     CreateManagedWorktreeParams,
     "signal" | "commitGuard" | "withSource" | "withRollback"
   > & {
@@ -86,6 +87,10 @@ export async function createWithWorktreeAllocation(
   ) => Promise<ManagedWorktreeCreationOutcome>,
   rollbackPublished: (record: ManagedWorktreeRecord) => Promise<void>,
 ): Promise<ManagedWorktreeCreationOutcome> {
+  const params = {
+    ...input,
+    waitUntil: performance.now() + WORKTREE_CREATE_LEASE_WAIT_MS,
+  };
   for (;;) {
     const publication: WorktreeCreationPublication = { id: randomUUID() };
     try {
@@ -537,13 +542,6 @@ export async function resolveRepositoryIdentity(repoRoot: string) {
     originUrl: resolved.originUrl,
     fingerprint: resolved.fingerprint,
   };
-}
-
-export async function cleanupFailedCreate(...args: Parameters<typeof removeFailedWorktree>) {
-  const failure = await removeFailedWorktree(...args);
-  if (failure) {
-    throw new Error(`failed to clean up worktree creation: ${failure.message}`);
-  }
 }
 
 export async function removeFailedWorktree(

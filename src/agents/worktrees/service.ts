@@ -73,7 +73,7 @@ import {
 import { reconcileListedWorktrees } from "./service-list.js";
 import {
   canResetFailedWorktreeAdd,
-  cleanupFailedCreate,
+  removeFailedWorktree,
   createWithWorktreeAllocation,
   createOwnedWorktree,
   prepareWorktreeDestination,
@@ -438,7 +438,7 @@ export class ManagedWorktreeService {
         throw new WorktreePendingContentionError(collision.record.id);
       }
       throw new Error(
-        "Managed worktree name or owner already has a pending checkout; retry after it settles",
+        `Interrupted worktree creation retained at ${collision.record.path}; inspect its Git registration and choose an unused name before retrying.`,
       );
     }
     const suppliedName = params.name === undefined ? undefined : validateName(params.name);
@@ -583,7 +583,15 @@ export class ManagedWorktreeService {
               publication.record = published;
               return;
             }
-            await cleanupFailedCreate(repository.repoRoot, worktreePath, branch, commitGuard);
+            const failure = await removeFailedWorktree(
+              repository.repoRoot,
+              worktreePath,
+              branch,
+              commitGuard,
+            );
+            if (failure) {
+              throw failure;
+            }
           };
           if (params.withRollback) {
             await params.withRollback(cleanup);
@@ -677,6 +685,7 @@ export class ManagedWorktreeService {
       return await addManagedWorktree({
         env: this.env,
         now: this.now,
+        waitUntil: params.waitUntil,
         enabled: this.getConfig?.().worktreeAcceleration !== false,
         repoRoot: repository.repoRoot,
         commonDir: repository.commonDir,

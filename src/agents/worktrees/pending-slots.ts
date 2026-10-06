@@ -15,15 +15,12 @@ export async function readWorktreeSlotCount(env: NodeJS.ProcessEnv): Promise<num
   });
 }
 
-export async function readPendingWorktrees(
-  env: NodeJS.ProcessEnv,
-  options: { inspectOwners?: boolean } = {},
-): Promise<PendingWorktreeSlot[]> {
+export async function readPendingWorktrees(env: NodeJS.ProcessEnv): Promise<PendingWorktreeSlot[]> {
   const context = captureWorktreeRunEndContext(env);
   const { executeOpenClawStateWorker } = await import("../../state/openclaw-state-worker-store.js");
   return await executeOpenClawStateWorker(context, {
     type: "worktrees.pendingSlots",
-    input: options,
+    input: undefined,
   });
 }
 
@@ -67,16 +64,15 @@ export function releasePendingWorktree(
   );
 }
 
-export function recoverPendingWorktree(
+export function recoverPendingWorktrees(
   env: NodeJS.ProcessEnv,
-  id: string,
   authority: WorktreeWorkerAuthority,
 ): Promise<void> {
   return runWorktreeRunEndCommand(
     captureWorktreeRunEndContext(env),
     {
       type: "worktrees.recoverPending",
-      input: { value: { id }, receipt: randomUUID() },
+      input: { value: undefined, receipt: randomUUID() },
     },
     authority,
   );

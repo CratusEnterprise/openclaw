@@ -6,7 +6,7 @@ import {
   readPendingWorktreesInDatabase,
   reservePendingWorktreeInDatabase,
   releasePendingWorktreeInDatabase,
-  recoverPendingWorktreeInDatabase,
+  recoverPendingWorktreesInDatabase,
   readWorktreeSlotCountInDatabase,
 } from "./pending-slots.worker.js";
 import { writeProvisionedSnapshotInDatabase } from "./provisioned-snapshot.worker.js";
@@ -44,8 +44,8 @@ import type { ManagedWorktreeOwnerKind } from "./types.js";
 export const worktreeOperations = {
   "worktrees.slotCount": (_input: undefined, { open }) =>
     readWorktreeSlotCountInDatabase(open().db),
-  "worktrees.pendingSlots": (input: { inspectOwners?: boolean }, { open }) =>
-    readPendingWorktreesInDatabase(open().db, input),
+  "worktrees.pendingSlots": (_input: undefined, { open }) =>
+    readPendingWorktreesInDatabase(open().db),
   "worktrees.reservePending": worktreeRunEndMutation(
     "worktrees.reservePending",
     reservePendingWorktreeInDatabase,
@@ -56,7 +56,7 @@ export const worktreeOperations = {
   ),
   "worktrees.recoverPending": worktreeRunEndMutation(
     "worktrees.recoverPending",
-    recoverPendingWorktreeInDatabase,
+    recoverPendingWorktreesInDatabase,
   ),
   "worktrees.insert": worktreeRunEndMutation("worktrees.insert", insertRegistryWorktreeInDatabase),
   "worktrees.update": worktreeRunEndMutation("worktrees.update", updateRegistryWorktreeInDatabase),

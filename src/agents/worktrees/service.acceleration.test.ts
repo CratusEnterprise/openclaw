@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
+import { hostname } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { probeTreeClone, readCloneFileMetadata } from "@openclaw/fs-safe/copy";
@@ -10,6 +11,7 @@ import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js"
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import * as gitExec from "../../infra/git-exec.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
+import { CommandProcessCleanupError } from "../../process/exec-result.js";
 import * as commandRunner from "../../process/exec-runner.js";
 import * as commandExec from "../../process/exec.js";
 import { createDeferredCore } from "../../shared/deferred.js";
@@ -78,6 +80,94 @@ describe("ManagedWorktreeService filesystem acceleration", () => {
       now: () => now,
       getConfig: () => ({ worktreeAcceleration: acceleration }),
     });
+  });
+
+  it("reclaims dead creation custody before concurrent creates after restart", async () => {
+    await service.create({ repoRoot: repo, name: "warm", baseRef: "HEAD" });
+    const failure = new CommandProcessCleanupError();
+    vi.mocked(backend.cloneTemplate).mockRejectedValue(failure);
+    const crashed = await Promise.allSettled(
+      Array.from({ length: 3 }, (_, index) =>
+        service.create({
+          repoRoot: repo,
+          name: `crashed-${index}`,
+          baseRef: "HEAD",
+          ownerKind: "session",
+          ownerId: `agent:main:crashed-${index}`,
+        }),
+      ),
+    );
+    expect(crashed.every((result) => result.status === "rejected")).toBe(true);
+    expect(await readPendingWorktrees(env)).toHaveLength(3);
+    const template = listTemplates(env)[0]!;
+    // Persist the crash boundary with the real owner's rows, then restart its database lifetime.
+    runOpenClawStateWriteTransaction(
+      ({ db }) => {
+        const k = getNodeSqliteKysely<Pick<DB, "state_leases" | "worktree_templates">>(db);
+        const rows = executeSqliteQuerySync(
+          db,
+          k
+            .selectFrom("state_leases")
+            .selectAll()
+            .where("scope", "like", "core:managed-worktrees:%"),
+        ).rows;
+        for (const row of rows) {
+          executeSqliteQuerySync(
+            db,
+            k
+              .updateTable("state_leases")
+              .set({
+                expires_at: row.expires_at === null ? null : 0,
+                payload_json: JSON.stringify({
+                  ...JSON.parse(row.payload_json ?? "{}"),
+                  owner: { pid: 2147483647, host: hostname(), startedAt: null },
+                }),
+              })
+              .where("scope", "=", row.scope)
+              .where("lease_key", "=", row.lease_key),
+          );
+        }
+        executeSqliteQuerySync(
+          db,
+          k
+            .updateTable("worktree_templates")
+            .set({ status: "preparing" })
+            .where("id", "=", template.id),
+        );
+      },
+      { env },
+    );
+    await closeOpenClawStateDatabaseAsync();
+    service = new ManagedWorktreeService({ env, getConfig: () => ({ worktreeMaxCount: 4 }) });
+    vi.mocked(backend.cloneTemplate).mockImplementation(createCopyWorktreeBackend().cloneTemplate);
+    const completed = await Promise.all(
+      Array.from({ length: 3 }, (_, index) =>
+        service.create({
+          repoRoot: repo,
+          suggestedName: `crashed-${index}`,
+          baseRef: "HEAD",
+          ownerKind: "session",
+          ownerId: `agent:main:crashed-${index}`,
+        }),
+      ),
+    );
+    expect(completed.map(({ name }) => name).toSorted()).toEqual([
+      "crashed-0-2",
+      "crashed-1-2",
+      "crashed-2-2",
+    ]);
+    await expect(
+      service.create({ repoRoot: repo, name: "crashed-0", baseRef: "HEAD" }),
+    ).rejects.toThrow(/retained.*unused name/);
+    for (const record of completed) {
+      expect(await fs.readFile(path.join(record.path, "README.md"), "utf8")).toBe("base\n");
+    }
+    expect((await readPendingWorktrees(env)).every(({ state }) => state === "recovering")).toBe(
+      true,
+    );
+    expect(listTemplates(env)).toEqual([
+      expect.objectContaining({ status: "ready", id: expect.not.stringMatching(template.id) }),
+    ]);
   });
 
   it("creates an empty workspace without retaining or cloning an empty template", async () => {

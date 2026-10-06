@@ -25,6 +25,7 @@ import { prepareWorktreeTemplate } from "./template-cache.js";
 const log = createSubsystemLogger("agents/worktrees");
 
 type CheckoutOptions = WorktreeFilesystemOptions & {
+  waitUntil?: number;
   env: NodeJS.ProcessEnv;
   now: () => number;
   enabled: boolean;

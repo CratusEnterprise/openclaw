@@ -5,14 +5,14 @@ import { resolveStateDir } from "../../config/paths.js";
 import { isMissingPathError } from "../../infra/errors.js";
 import { isPathInside } from "../../infra/path-guards.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
-import { withWorktreeMutationLease, type WorktreeAllocationGuard } from "./allocation.js";
+import type { WorktreeAllocationGuard } from "./allocation.js";
 import type { WorktreeGcProgress } from "./gc-progress.js";
 import {
   canonicalPathKey,
   resolveManagedWorktreePathKeys,
   shouldPreserveOrphanCandidate,
 } from "./orphan-paths.js";
-import { readPendingWorktrees, recoverPendingWorktree } from "./pending-slots.js";
+import { readPendingWorktrees } from "./pending-slots.js";
 import { readRegistryWorktrees } from "./registry-read.js";
 import { retireExpiredManagedWorktreeSnapshot } from "./snapshot-host.js";
 import { WORKTREE_TEMPLATE_DIRECTORY } from "./template-cache.js";
@@ -37,7 +37,7 @@ export async function collectRetiredWorktreeArtifacts({
 }): Promise<{ orphansDeleted: number; snapshotsPruned: number }> {
   let orphansDeleted = 0;
   let snapshotsPruned = 0;
-  const pending = await readPendingWorktrees(env, { inspectOwners: true });
+  const pending = await readPendingWorktrees(env);
   const expired = records.filter(
     (record) => record.removedAt !== undefined && record.removedAt < expiresBefore,
   );
@@ -50,33 +50,23 @@ export async function collectRetiredWorktreeArtifacts({
   if (hasOrphanCandidates || expired.length > 0 || pending.length > 0) {
     try {
       await withAllocationLease(async (guard) => {
-        for (const slot of pending) {
-          if (slot.state === "pending" && slot.ownerStatus !== "dead") {
+        const slots = await readPendingWorktrees(env);
+        for (const { record, state } of slots) {
+          if (state !== "recovering") {
             continue;
           }
-          try {
-            if (slot.state === "pending") {
-              await withWorktreeMutationLease({ ...guard, env, id: slot.record.id }, (owned) =>
-                recoverPendingWorktree(env, slot.record.id, owned.workerAuthority),
-              );
-            }
-            // Parent death cannot prove extinction of an admitted native child.
-            // Release the slot, retaining path custody until recovery resolves its writes.
-            progress.result.retiredCheckoutPaths.push(slot.record.path);
-            progress.error(
-              "orphans",
-              new Error(
-                `Interrupted worktree creation retained at ${slot.record.path}; inspect its Git registration and native processes before manual recovery`,
-              ),
-              slot.record.id,
-            );
-          } catch (error) {
-            progress.error("orphans", error, slot.record.id);
-          }
+          progress.result.retiredCheckoutPaths.push(record.path);
+          progress.error(
+            "orphans",
+            new Error(
+              `Interrupted worktree creation retained at ${record.path}; inspect its Git registration and native processes before manual recovery`,
+            ),
+            record.id,
+          );
         }
         if (hasOrphanCandidates) {
           try {
-            const pendingRecords = (await readPendingWorktrees(env)).map(({ record }) => record);
+            const pendingRecords = slots.map(({ record }) => record);
             orphansDeleted = await reconcileOrphans(
               env,
               getConfig,
