@@ -18,7 +18,6 @@ import {
 import { uiConversationMatches, type UiSessionDefaultsHost } from "../sessions/session-key.ts";
 import {
   chatMetadataCache,
-  isSessionMetadataInvalidation,
   type ChatMetadataEntry,
   type ChatMetadataPublication,
   type ChatMetadataRequest,
@@ -40,7 +39,6 @@ function metadataScopeKey({ agentId, sessionKey, authProfileId }: ChatMetadataPa
 }
 
 const MAX_CACHED_CHAT_METADATA = 64;
-const SESSION_METADATA_DEBOUNCE_MS = 2_500;
 
 function metadataEntryFor(
   client: GatewayBrowserClient,
@@ -54,27 +52,12 @@ function metadataEntryFor(
       scope?: ChatMetadataParams,
       sessionDefaults?: UiSessionDefaultsHost,
       sessionEvent?: Record<string, unknown> | null,
+      matchesCatalog?: (scope: ChatMetadataParams) => boolean,
+      commandsChanged = true,
     ) => {
-      if (
-        sessionEvent !== undefined &&
-        sessionEvent?.catalogChanged !== true &&
-        ((!scope && sessionEvent?.reason !== "delete" && sessionEvent?.reason !== "cleanup") ||
-          (sessionEvent?.phase !== "reset" &&
-            ![
-              "reset",
-              "patch",
-              "command-metadata",
-              "create",
-              "new",
-              "delete",
-              "recovery",
-              "cleanup",
-            ].some((reason) => reason === sessionEvent?.reason)))
-      ) {
-        return;
-      }
       const invalidated = Array.from(entries.values()).filter(
         (entry) =>
+          (!matchesCatalog || matchesCatalog(entry.scope)) &&
           (sessionEvent === undefined ||
             scope !== undefined ||
             entry.scope.sessionKey !== undefined) &&
@@ -91,14 +74,14 @@ function metadataEntryFor(
           (!scope?.authProfileId || entry.scope.authProfileId === scope.authProfileId),
       );
       // Retire every affected writer before subscribers can synchronously start replacements.
-      const sessionOnly =
-        scope?.sessionKey !== undefined && isSessionMetadataInvalidation(sessionEvent);
+      const sessionOnly = sessionEvent !== undefined;
       for (const entry of invalidated) {
         entry.refreshRevision += 1;
-        entry.refreshAfter = sessionOnly ? Date.now() + SESSION_METADATA_DEBOUNCE_MS : undefined;
-        entry.result = undefined;
-        entry.writer = undefined;
-        entry.activeRequest?.controller.abort();
+        if (!sessionOnly && commandsChanged) {
+          entry.invalidated = true;
+          entry.writer = undefined;
+          entry.activeRequest?.controller.abort();
+        }
       }
       for (const entry of invalidated) {
         notifyChatMetadataListeners(entry, {
@@ -169,9 +152,27 @@ function preparePublication(entry: ChatMetadataEntry): ChatMetadataPublication {
     isCurrent,
     publish: (result) => {
       // Startup responses may include a catalog; models.list owns its UI publication.
-      const metadata = { commands: result.commands };
+      const metadata =
+        "unchanged" in result
+          ? entry.result
+          : result.commands === undefined
+            ? undefined
+            : {
+                commands: result.commands,
+                ...(result.revision ? { revision: result.revision } : {}),
+              };
+      if (!metadata) {
+        if (isCurrent()) {
+          entry.invalidated = true;
+        }
+        throw new Error("Chat commands are unavailable. Retry the metadata request.");
+      }
+      if ("unchanged" in result && metadata.revision !== result.revision) {
+        throw new Error("Chat metadata was unchanged without a retained revision.");
+      }
       if (isCurrent()) {
         entry.result = metadata;
+        entry.invalidated = false;
         notifyChatMetadataListeners(entry, {
           type: "result",
           result: metadata,
@@ -230,8 +231,9 @@ function beginChatMetadataRequest(
               }
               try {
                 result = await client.request<ChatMetadataResponse>("chat.metadata", {
-                  ...entry.scope,
+                  agentId: entry.scope.agentId,
                   includeModels: false,
+                  ...(entry.result?.revision ? { ifRevision: entry.result.revision } : {}),
                 });
                 break;
               } catch (error) {
@@ -281,7 +283,8 @@ export function peekChatMetadata(
   client: GatewayBrowserClient,
   scope: ChatMetadataParams,
 ): ChatMetadataResult | undefined {
-  return chatMetadataCache.get(client)?.entries.get(metadataScopeKey(scope))?.result;
+  const entry = chatMetadataCache.get(client)?.entries.get(metadataScopeKey(scope));
+  return entry?.invalidated ? undefined : entry?.result;
 }
 
 export function subscribeChatMetadata(
@@ -313,7 +316,7 @@ export function loadChatMetadata(
   scope: ChatMetadataParams,
 ): Promise<ChatMetadataResult> {
   const entry = metadataEntryFor(client, scope);
-  if (entry.result) {
+  if (entry.result && !entry.invalidated) {
     return Promise.resolve(entry.result);
   }
   const request = entry.queuedRequest ?? entry.activeRequest;
@@ -353,7 +356,6 @@ export function beginChatMetadataPublication(
 export function retireChatMetadataRefresh(client: GatewayBrowserClient, scope: ChatMetadataParams) {
   const entry = metadataEntryFor(client, scope);
   entry.refreshRevision += 1;
-  entry.refreshAfter = undefined;
   const previous = entry.refresh;
   entry.refresh = undefined;
   // Foreground demand can adopt this catalog read; only scope release cancels it.
@@ -411,7 +413,6 @@ export function loadChatMetadataRefresh(
   const catalog = createDeferredCore<ModelCatalogResult | undefined>();
   const completed = createDeferredCore();
   let wakePending = false;
-  let debounceTimer: ReturnType<typeof setTimeout> | undefined;
   const record: ChatMetadataRefreshRecord = {
     controller: entry.catalogController,
     catalog: catalog.promise,
@@ -429,18 +430,12 @@ export function loadChatMetadataRefresh(
       if (record.phase !== "waiting") {
         return;
       }
-      clearTimeout(debounceTimer);
       peekModelCatalog(client, scope);
       const current = entry.refresh === record;
       const active =
         current &&
         !record.controller.signal.aborted &&
         Array.from(entry.listeners.values()).some((isActive) => isActive());
-      const delay = (entry.refreshAfter ?? 0) - Date.now();
-      if (active && delay > 0) {
-        debounceTimer = setTimeout(record.start, delay);
-        return;
-      }
       if (active && record.metadataRequired && entry.queuedRequest) {
         // Refresh the queued publication without admitting another transport.
         void loadChatMetadata(client, scope);

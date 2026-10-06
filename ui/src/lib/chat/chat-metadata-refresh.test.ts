@@ -29,6 +29,52 @@ const models = [{ id: "fresh", name: "Fresh", provider: "test" }];
 afterEach(() => vi.useRealTimers());
 
 describe("automatic metadata admission", () => {
+  it("retains commands and catalogs across activity and refreshes one changed selection", async () => {
+    vi.useFakeTimers();
+    let sessionModelRevision = "selection-1";
+    const request = vi.fn(async (method: string) =>
+      method === "chat.metadata" ? commands : { models, sessionModelRevision },
+    );
+    const client = createTestGatewayClient(request);
+    const refreshes: ReturnType<typeof loadChatMetadataRefresh>[] = [];
+    const release = subscribeChatMetadata(client, scope, (update) => {
+      if (update.type === "invalidated") {
+        refreshes.push(loadChatMetadataRefresh(client, scope));
+      }
+    });
+    const publish = (revision: string) =>
+      invalidateChatMetadataForSessionEvent(
+        client,
+        {
+          ...scope,
+          reason: "patch",
+          session: { key: scope.sessionKey, sessionModelRevision: revision },
+        },
+        {},
+      );
+    try {
+      await loadChatMetadataRefresh(client, scope).completed;
+      request.mockClear();
+      for (let index = 0; index < 50; index++) {
+        publish(sessionModelRevision);
+        await vi.advanceTimersByTimeAsync(3_000);
+      }
+      expect(request).not.toHaveBeenCalled();
+      sessionModelRevision = "selection-2";
+      publish(sessionModelRevision);
+      await vi.advanceTimersByTimeAsync(2_500);
+      await Promise.all(refreshes.map((refresh) => refresh.completed));
+      expect(request.mock.calls.map(([method]) => method)).toEqual(["models.list"]);
+      publish(sessionModelRevision);
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(request).toHaveBeenCalledOnce();
+      expect(peekChatMetadata(client, scope)).toEqual(commands);
+      expect(peekModelCatalog(client, scope)?.sessionModelRevision).toBe(sessionModelRevision);
+    } finally {
+      release();
+    }
+  });
+
   it("hands a retiring automatic catalog to its foreground reader without replacing the read", async () => {
     const pending = createDeferred<{ models: typeof models }>();
     const request = vi
@@ -104,9 +150,6 @@ describe("automatic metadata admission", () => {
       const refresh = loadChatMetadataRefresh(client, scope);
       const catalogResult = refresh.catalog.catch((error: unknown) => error);
       try {
-        await vi.advanceTimersByTimeAsync(2_499);
-        expect(request).not.toHaveBeenCalled();
-        await vi.advanceTimersByTimeAsync(1);
         expect(request.mock.calls.map(([method]) => method)).toEqual([
           "models.list",
           "chat.metadata",
@@ -136,57 +179,6 @@ describe("automatic metadata admission", () => {
         await refresh.completed;
         release();
       }
-    },
-  );
-
-  it.each(["visible", "hidden", "released", "global invalidation"])(
-    "coalesces session patches and rechecks admission when %s",
-    async (transition) => {
-      vi.useFakeTimers();
-      const request = vi.fn(async (method: string) =>
-        method === "chat.metadata" ? commands : { models },
-      );
-      const client = createTestGatewayClient(request);
-      let active = true;
-      const refreshes: ReturnType<typeof loadChatMetadataRefresh>[] = [];
-      const release = subscribeChatMetadata(
-        client,
-        scope,
-        (update) => {
-          if (update.type === "invalidated") {
-            refreshes.push(loadChatMetadataRefresh(client, scope));
-          }
-        },
-        () => active,
-      );
-      await loadChatMetadataRefresh(client, scope).completed;
-      request.mockClear();
-      for (let index = 0; index < 5; index++) {
-        invalidateChatMetadataForSessionEvent(client, { ...scope, reason: "patch" }, {});
-        await vi.advanceTimersByTimeAsync(500);
-      }
-      expect(request).not.toHaveBeenCalled();
-      if (transition === "hidden") {
-        active = false;
-      } else if (transition === "released") {
-        release();
-      } else if (transition === "global invalidation") {
-        invalidateChatMetadataStore(client);
-        expect(request).toHaveBeenCalledWith("chat.metadata", { ...scope, includeModels: false });
-      }
-      await vi.advanceTimersByTimeAsync(2_500);
-      await Promise.all(refreshes.map((refresh) => refresh.completed));
-      const admitted = transition === "visible" || transition === "global invalidation";
-      expect(request.mock.calls.filter(([method]) => method === "chat.metadata")).toHaveLength(
-        admitted ? 1 : 0,
-      );
-      if (transition === "hidden") {
-        active = true;
-        await loadChatMetadataRefresh(client, scope).completed;
-        expect(request.mock.calls.filter(([method]) => method === "chat.metadata")).toHaveLength(1);
-      }
-      release();
-      expect(vi.getTimerCount()).toBe(0);
     },
   );
 
@@ -222,7 +214,7 @@ describe("automatic metadata admission", () => {
     { reason: "delete", sessionKey: scope.sessionKey },
     { reason: "delete", sessionKey: undefined },
     { reason: "cleanup", sessionKey: undefined },
-  ])("retires cached sessions before remount after $reason ($sessionKey)", async (event) => {
+  ])("retains agent commands before remount after $reason ($sessionKey)", async (event) => {
     const retiredCommands: ChatMetadataResult = {
       commands: [
         {
@@ -251,8 +243,8 @@ describe("automatic metadata admission", () => {
     invalidateChatMetadataForSessionEvent(client, { ...event, agentId: "main" }, {});
     release = subscribeChatMetadata(client, scope, () => {});
     await loadChatMetadataRefresh(client, scope).completed;
-    expect(metadataReads).toBe(2);
-    expect(peekChatMetadata(client, scope)).toEqual(commands);
+    expect(metadataReads).toBe(1);
+    expect(peekChatMetadata(client, scope)).toEqual(retiredCommands);
     expect(peekChatMetadata(client, draft)).toEqual(commands);
     release();
   });
