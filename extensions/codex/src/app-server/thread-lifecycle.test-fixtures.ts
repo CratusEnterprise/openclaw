@@ -399,7 +399,7 @@ export type CodexAttemptThreadInput = Omit<
 const clientsWithEmptySkillCatalog = new WeakSet<CodexAppServerClient>();
 
 /** Keeps lifecycle-only tests independent from native skill catalog contents. */
-function stubEmptyCodexSkillCatalog(client: CodexAppServerClient): void {
+export function stubEmptyCodexSkillCatalog(client: CodexAppServerClient): void {
   if (clientsWithEmptySkillCatalog.has(client)) {
     return;
   }
@@ -433,10 +433,17 @@ export function startOrResumeAttemptThreadWithoutSkills(params: CodexAttemptThre
   return startOrResumeAttemptThread(params);
 }
 
+export function startOrResumeThreadWithEmptySkillCatalog(
+  params: Parameters<typeof startOrResumeThreadImpl>[0],
+) {
+  stubEmptyCodexSkillCatalog(params.client);
+  return startOrResumeThreadImpl(params);
+}
+
 export function startOrResumeThread(
   params: Omit<Parameters<typeof startOrResumeThreadImpl>[0], "bindingStore">,
 ) {
-  return startOrResumeThreadImpl({
+  return startOrResumeThreadWithEmptySkillCatalog({
     signal: new AbortController().signal,
     ...params,
     bindingStore: testCodexAppServerBindingStore,
