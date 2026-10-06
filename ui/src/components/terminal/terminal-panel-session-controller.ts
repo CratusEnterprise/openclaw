@@ -76,6 +76,13 @@ export class TerminalPanelSessionController implements TerminalPanelSessionContr
         this.host.isConnected,
       attach: (sessionId, agentOwned, cancel) =>
         this.attachSessionNow(sessionId, agentOwned, cancel),
+      client: () => this.activeClient,
+      showError: (text) => this.setError(text),
+      present: (tab) => {
+        tab.id = `tab-${++this.tabSequence}`;
+        this.updateControllerState({ tabs: [...this.tabs, tab], booting: false });
+        this.switchTo(tab.id);
+      },
       open: (catalog, agentId, cancel) => this.openSessionNow(catalog, agentId, cancel),
       reattach: (cancel) => this.reattachPersistedSessions(cancel),
       cancelledRestoreCompleted: () => {
@@ -164,24 +171,14 @@ export class TerminalPanelSessionController implements TerminalPanelSessionContr
   }
 
   get canHandoffSessions(): boolean {
-    return !this.booting && !this.intentQueue.fenced;
+    return this.intentQueue.canHandoff(this);
   }
 
   handoffSessions(): boolean {
     if (!this.canHandoffSessions) {
       return false;
     }
-    const tabs = this.tabs
-      .filter((tab) => tab.gatewaySessionId && tab.status !== "exited")
-      .toSorted((a, b) => Number(a.id === this.activeId) - Number(b.id === this.activeId));
-    // Keep the complete transfer until the destination claims the document queue.
-    // Last attachment selects the source's active tab without replacing other tabs.
-    for (const tab of tabs) {
-      void this.intentQueue.queue(
-        { kind: "attach", sessionId: tab.gatewaySessionId, agentOwned: tab.agentOwned ?? false },
-        { deferUntilHostChange: true },
-      );
-    }
+    this.tabs = this.intentQueue.queueHandoff(this, this.activeClient);
     // Retire the source's views, not its PTYs: a retained shell must not replay
     // stale tabs or selection when a later docking cycle makes it visible again.
     this.disposeAllTabs();
@@ -344,7 +341,9 @@ export class TerminalPanelSessionController implements TerminalPanelSessionContr
     agentOwned: boolean,
     cancelIntent: () => void,
   ): Promise<boolean> {
-    const existing = this.tabs.find((tab) => tab.gatewaySessionId === sessionId);
+    const existing = this.tabs.find(
+      (tab) => tab.gatewaySessionId === sessionId && tab.status !== "exited",
+    );
     if (existing) {
       this.switchTo(existing.id);
       return true;
@@ -378,7 +377,6 @@ export class TerminalPanelSessionController implements TerminalPanelSessionContr
       panel: this.host,
       connection: this.connectionFor(operation),
       sequence: ++this.tabSequence,
-      signal: operation.signal,
       awaitFirstOutput: options.awaitFirstOutput === true,
       isCurrent: () => this.isTerminalOperationCurrent(operation, options.restore?.batch),
       onReady: (tab) => this.readiness.markReady(tab),
@@ -634,6 +632,7 @@ export class TerminalPanelSessionController implements TerminalPanelSessionContr
     }
     this.retireRestoredTab(tab);
     this.readiness.stop(tab);
+    tab.controller.setReadOnly(true);
     delete tab.pendingOpen;
     if (info.error?.trim()) {
       this.setError(formatUiExternalText(info.error));

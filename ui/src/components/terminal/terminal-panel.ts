@@ -225,6 +225,7 @@ export class OpenClawTerminalPanel extends OpenClawLitElement implements PanelHo
         className,
       ]),
       this.terminalSessions.booting,
+      this.terminalSessions.canHandoffSessions,
       this.sessionPickerOpen,
       this.sessionPickerTask.status,
       this.pickerSessions.map((session) => session.sessionId),
