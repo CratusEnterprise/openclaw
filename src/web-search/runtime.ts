@@ -93,7 +93,6 @@ function hasImplicitProviderSelectionSignal(
   return hasEntryCredential(provider, config, agentDir, authStore, resolveAuthProfileStoreSource);
 }
 
-/** Reports whether a web_search provider has usable configured credentials. */
 export function isWebSearchProviderConfigured(params: {
   provider: Pick<
     PluginWebSearchProviderEntry,
@@ -134,7 +133,6 @@ export function listConfiguredWebSearchProviders(params?: {
   });
 }
 
-/** Resolves configured or auto-detected web_search provider id. */
 export function resolveWebSearchProviderId(params: {
   search?: WebSearchConfig;
   config?: OpenClawConfig;

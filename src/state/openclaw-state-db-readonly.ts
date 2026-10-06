@@ -410,16 +410,6 @@ export function withExistingOpenClawStateDatabaseReadOnly<T>(
 export function executeExistingOpenClawStateRead(
   options: OpenClawStateDatabaseOptions,
   command: OpenClawStateReadCommand,
-  readOptions: OpenClawStateReadOptions = {},
-): Promise<OpenClawStateReadReply | undefined> {
-  const completion = startExistingOpenClawStateRead(options, command, readOptions);
-  return completion.kind === "retained" ? completion.operation.result : completion.result;
-}
-
-/** Native cached backups remain awaited-only; fresh and inherited readers retain real progress. */
-function startExistingOpenClawStateRead(
-  options: OpenClawStateDatabaseOptions,
-  command: OpenClawStateReadCommand,
   {
     context,
     current,
@@ -429,8 +419,9 @@ function startExistingOpenClawStateRead(
     preferIndependentWarmRead,
     onChunk,
   }: OpenClawStateReadOptions = {},
-): OpenClawStateReadCompletion {
+): Promise<OpenClawStateReadReply | undefined> {
   const receipt: OpenClawStateReadReceipt = { phase: "before-read" };
+  let completion: OpenClawStateReadCompletion;
   try {
     context?.admission.assertCurrent();
     const execute = () =>
@@ -452,10 +443,14 @@ function startExistingOpenClawStateRead(
       : current
         ? () => stateSnapshotReads.exit(execute)
         : execute;
-    return context?.runInCapturedSchemaScope ? context.runInCapturedSchemaScope(read) : read();
+    completion = context?.runInCapturedSchemaScope
+      ? context.runInCapturedSchemaScope(read)
+      : read();
   } catch (error) {
     throw mapError ? mapError(error, receipt.phase) : error;
   }
+  // Native cached backups remain awaited-only; fresh and inherited readers retain real progress.
+  return completion.kind === "retained" ? completion.operation.result : completion.result;
 }
 
 function startRetainedOpenClawStateRead(
