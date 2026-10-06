@@ -17,11 +17,8 @@ const MAX_PERSONAL_SKILL_DEPTH = 6;
 const MAX_PERSONAL_SKILL_ENTRIES = 10_000;
 const CODEX_VISUALIZE_PLUGIN_ID = "visualize@openai-bundled";
 const CODEX_VISUALIZE_LEGACY_PATH = "/plugins/cache/openai-bundled/visualize/";
-const CODEX_VISUALIZE_CACHE_RELATIVE_PATH = path.join(
-  "plugins",
-  "cache",
-  "openai-bundled",
-  "visualize",
+const DEFAULT_STATE_SKILL_DISCOVERY_UNAVAILABLE = Symbol(
+  "default-state-skill-discovery-unavailable",
 );
 // Keep one bounded workspace/environment snapshot per physical app-server client.
 const nativeSkillIsolationByClient = new WeakMap<
@@ -31,7 +28,9 @@ const nativeSkillIsolationByClient = new WeakMap<
     snapshot?: {
       key: string;
       revision: number;
-      result: Promise<CodexNativeSkillIsolation | undefined>;
+      result: Promise<
+        CodexNativeSkillIsolation | undefined | typeof DEFAULT_STATE_SKILL_DISCOVERY_UNAVAILABLE
+      >;
       settled: boolean;
       signal?: AbortSignal;
     };
@@ -74,51 +73,6 @@ async function usesDefaultStateDir(): Promise<boolean> {
     canonicalizeExistingPath(path.join(home, ".openclaw")),
   ]);
   return stateDir === defaultStateDir;
-}
-
-async function collectImplicitDefaultVisualizeSkillPaths(params: {
-  codexHome?: string;
-  home?: string;
-  userProfile?: string;
-}): Promise<string[]> {
-  const home =
-    params.home?.trim() ||
-    process.env.HOME?.trim() ||
-    params.userProfile?.trim() ||
-    process.env.USERPROFILE?.trim() ||
-    os.homedir();
-  const codexHomes = new Set([
-    path.join(home, ".codex"),
-    params.codexHome?.trim() || process.env.CODEX_HOME?.trim() || "",
-  ]);
-  const skillPaths = new Set<string>();
-  for (const codexHome of codexHomes) {
-    if (!codexHome) {
-      continue;
-    }
-    const visualizeRoot = path.join(codexHome, CODEX_VISUALIZE_CACHE_RELATIVE_PATH);
-    const candidates = [path.join(visualizeRoot, "skills", "visualize", "SKILL.md")];
-    try {
-      const versions = await fs.readdir(visualizeRoot, { withFileTypes: true });
-      for (const version of versions) {
-        if (version.isDirectory()) {
-          candidates.push(
-            path.join(visualizeRoot, version.name, "skills", "visualize", "SKILL.md"),
-          );
-        }
-      }
-    } catch {
-      // Default-state suppression is best effort: discovery must not block a Codex turn.
-    }
-    for (const candidate of candidates) {
-      try {
-        skillPaths.add(await fs.realpath(candidate));
-      } catch {
-        // A missing or unreadable cache entry only leaves that skill unsuppressed.
-      }
-    }
-  }
-  return [...skillPaths].toSorted((left, right) => left.localeCompare(right));
 }
 
 async function collectPersonalSkillRealPaths(
@@ -262,12 +216,6 @@ export async function resolveCodexNativeSkillIsolation(params: {
   signal?: AbortSignal;
 }): Promise<CodexNativeSkillIsolation | undefined> {
   params.signal?.throwIfAborted();
-  if (!process.env.OPENCLAW_STATE_DIR?.trim()) {
-    const disabledUserSkillPaths = await collectImplicitDefaultVisualizeSkillPaths(params);
-    return disabledUserSkillPaths.length > 0
-      ? { disabledUserSkillPaths, suppressNativeSkillInstructions: false }
-      : undefined;
-  }
   const key = JSON.stringify([
     path.resolve(resolveStateDir()),
     path.resolve(params.cwd),
@@ -306,6 +254,10 @@ export async function resolveCodexNativeSkillIsolation(params: {
       params.signal?.throwIfAborted();
       // A notification can invalidate even a scan that has not settled yet.
       if (snapshot.revision === cache.revision) {
+        if (isolation === DEFAULT_STATE_SKILL_DISCOVERY_UNAVAILABLE) {
+          cache.snapshot = undefined;
+          return undefined;
+        }
         return isolation;
       }
     } catch (error) {
@@ -319,7 +271,9 @@ export async function resolveCodexNativeSkillIsolation(params: {
 
 async function resolveUncachedCodexNativeSkillIsolation(
   params: Parameters<typeof resolveCodexNativeSkillIsolation>[0],
-): Promise<CodexNativeSkillIsolation | undefined> {
+): Promise<
+  CodexNativeSkillIsolation | undefined | typeof DEFAULT_STATE_SKILL_DISCOVERY_UNAVAILABLE
+> {
   const defaultStateDir = await usesDefaultStateDir();
   let response: CodexSkillsListResponse;
   try {
@@ -333,10 +287,7 @@ async function resolveUncachedCodexNativeSkillIsolation(
     if (!defaultStateDir) {
       throw error;
     }
-    const disabledUserSkillPaths = await collectImplicitDefaultVisualizeSkillPaths(params);
-    return disabledUserSkillPaths.length > 0
-      ? { disabledUserSkillPaths, suppressNativeSkillInstructions: false }
-      : undefined;
+    return DEFAULT_STATE_SKILL_DISCOVERY_UNAVAILABLE;
   }
   const skillPaths = new Set<string>();
   for (const entry of response.data) {

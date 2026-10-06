@@ -438,10 +438,6 @@ it.each([
       "SKILL.md",
     );
     const otherSkill = path.join(home, ".codex", "plugins", "cache", "other", "SKILL.md");
-    if (!stateDir) {
-      await fs.mkdir(path.dirname(visualizeSkill), { recursive: true });
-      await fs.writeFile(visualizeSkill, "visualize");
-    }
     const { client, request } = createFakeCodexAppServerClient(async () => ({
       data: [
         {
@@ -484,72 +480,32 @@ it.each([
         { path: visualizeSkill, enabled: false },
       ],
     });
-    expect(request).toHaveBeenCalledTimes(stateDir ? 1 : 0);
+    expect(request).toHaveBeenCalledTimes(1);
   });
 });
 
-it("falls back to the bundled cache when default-state skill reload fails", async () => {
+it.each([
+  ["implicit", undefined],
+  ["explicit", ".openclaw"],
+])("keeps %s default-state skill reload failures non-fatal", async (_label, stateDir) => {
   await withNativeSkillHome(async (home) => {
-    const visualizeSkill = path.join(
-      home,
-      ".codex",
-      "plugins",
-      "cache",
-      "openai-bundled",
-      "visualize",
-      "skills",
-      "visualize",
-      "SKILL.md",
-    );
-    await fs.mkdir(path.dirname(visualizeSkill), { recursive: true });
-    await fs.writeFile(visualizeSkill, "visualize");
-    const { client } = createFakeCodexAppServerClient(async () => {
+    const { client, request } = createFakeCodexAppServerClient(async () => {
       throw new Error("skill reload failed");
     });
 
-    const isolation = await withEnvAsync(
-      { CODEX_HOME: undefined, HOME: home, OPENCLAW_STATE_DIR: path.join(home, ".openclaw") },
-      async () => await resolveCodexNativeSkillIsolation({ client, cwd: home }),
-    );
-    expect(isolation).toEqual({
-      disabledUserSkillPaths: [visualizeSkill],
-      suppressNativeSkillInstructions: false,
-    });
-  });
-});
-
-it("does not block implicit default-state threads when the bundled cache is unreadable", async () => {
-  await withNativeSkillHome(async (home) => {
-    const visualizeRoot = path.join(
-      home,
-      ".codex",
-      "plugins",
-      "cache",
-      "openai-bundled",
-      "visualize",
-    );
-    const readdir = fs.readdir;
-    const readdirSpy = vi.spyOn(fs, "readdir").mockImplementation(async (...args) => {
-      if (args[0] === visualizeRoot) {
-        throw Object.assign(new Error("permission denied"), { code: "EACCES" });
-      }
-      return await readdir(...args);
-    });
-    const { client, request } = createFakeCodexAppServerClient(async () => {
-      throw new Error("skills/list must not be called");
-    });
-
-    try {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
       await expect(
         withEnvAsync(
-          { CODEX_HOME: undefined, HOME: home, OPENCLAW_STATE_DIR: undefined },
+          {
+            CODEX_HOME: undefined,
+            HOME: home,
+            OPENCLAW_STATE_DIR: stateDir ? path.join(home, stateDir) : undefined,
+          },
           async () => await resolveCodexNativeSkillIsolation({ client, cwd: home }),
         ),
       ).resolves.toBe(undefined);
-      expect(request).not.toHaveBeenCalled();
-    } finally {
-      readdirSpy.mockRestore();
     }
+    expect(request).toHaveBeenCalledTimes(2);
   });
 });
 
