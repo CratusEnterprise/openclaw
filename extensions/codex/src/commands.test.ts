@@ -1273,13 +1273,13 @@ describe("codex command", () => {
     const oldReleaseBlocked = new Promise<void>((resolve) => {
       releaseOld = resolve;
     });
-    const oldReleaseStarted = vi.fn();
+    const oldReleaseStarted = createDeferred<void>();
     const oldUnsubscribe = vi.fn();
     await retainCodexAppServerLiveThread(
       previous.client,
       "thread-release-rollover",
       async (_threadId, assertCurrent) => {
-        oldReleaseStarted();
+        oldReleaseStarted.resolve();
         await oldReleaseBlocked;
         assertCurrent?.();
         oldUnsubscribe();
@@ -1303,7 +1303,7 @@ describe("codex command", () => {
 
     const command = runCommand("resume thread-release-rollover", { codexControlRequest }, context);
     try {
-      await vi.waitFor(() => expect(oldReleaseStarted).toHaveBeenCalledOnce());
+      await oldReleaseStarted.promise;
       await patchSessionEntry({ ...scope, update: () => ({ sessionId: "session-2" }) });
       releaseOld();
 
